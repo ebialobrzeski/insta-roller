@@ -11,6 +11,10 @@ from functools import lru_cache
 from pathlib import Path
 
 
+# Helper programs must not open a console window of their own when the
+# application runs without one (the desktop app under pythonw).
+QUIET = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+
 @lru_cache
 def ffmpeg_exe() -> str:
     exe = os.environ.get("INSTA_ROLLER_FFMPEG") or shutil.which("ffmpeg")
@@ -33,7 +37,7 @@ def run(args: list[str], log: Path | None = None, cwd: Path | None = None,
         log.parent.mkdir(parents=True, exist_ok=True)
         with open(log, "a", encoding="utf-8") as f:
             f.write(f"[{datetime.now().isoformat(timespec='seconds')}] {subprocess.list2cmdline(cmd)}\n")
-    res = subprocess.run(cmd, capture_output=True, cwd=cwd, input=stdin,
+    res = subprocess.run(cmd, capture_output=True, **QUIET, cwd=cwd, input=stdin,
                          **({} if stdin else {"stdin": subprocess.DEVNULL}))
     res.stderr = res.stderr.decode("utf-8", "replace")
     res.stdout = res.stdout.decode("utf-8", "replace")
@@ -54,7 +58,7 @@ class MediaInfo:
 @lru_cache(maxsize=512)
 def probe(path: Path) -> MediaInfo:
     res = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", str(path)],
-                         capture_output=True, text=True, encoding="utf-8", errors="replace")
+                         capture_output=True, **QUIET, text=True, encoding="utf-8", errors="replace")
     err = res.stderr
     m = re.search(r"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)", err)
     if not m:
@@ -74,5 +78,5 @@ def has_encoder(name: str) -> bool:
     res = subprocess.run(
         [ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-f", "lavfi",
          "-i", "color=black:s=256x256:d=0.1", "-c:v", name, "-f", "null", "-"],
-        capture_output=True)
+        capture_output=True, **QUIET)
     return res.returncode == 0

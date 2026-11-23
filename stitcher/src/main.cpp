@@ -280,7 +280,7 @@ int run_process(const std::vector<std::string>& argv, const fs::path& cwd, std::
     si.hStdError = child_err;
     PROCESS_INFORMATION pi{};
     const std::wstring wcwd = cwd.empty() ? std::wstring() : cwd.wstring();
-    const BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, 0, nullptr,
+    const BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr,
                                    wcwd.empty() ? nullptr : wcwd.c_str(), &si, &pi);
     const DWORD last_error = ok ? 0 : GetLastError();
     if (nul_in != INVALID_HANDLE_VALUE) CloseHandle(nul_in);

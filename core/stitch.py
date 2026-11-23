@@ -78,7 +78,7 @@ class Stitcher:
         with open(log, "a", encoding="utf-8") as f:
             f.write(f"[{datetime.now().isoformat(timespec='seconds')}] {subprocess.list2cmdline(cmd)}\n")
         began = time.time()
-        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        res = subprocess.run(cmd, capture_output=True, **ffmpeg.QUIET, text=True, encoding="utf-8", errors="replace",
                              env={**os.environ, "INSTA_ROLLER_FFMPEG": ffmpeg.ffmpeg_exe()})
         if res.returncode != 0 or not out.exists():
             raise RuntimeError(f"stitcher failed ({res.returncode}):\n{(res.stderr or res.stdout)[-800:]}")

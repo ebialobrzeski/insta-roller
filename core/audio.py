@@ -17,7 +17,7 @@ def level_db(path: Path, start_s: float = 0.0, duration_s: float | None = None) 
     if duration_s:
         args += ["-t", f"{duration_s:.3f}"]
     args += ["-i", str(path), "-map", "0:a:0", "-ac", "1", "-ar", str(RATE), "-f", "s16le", "-"]
-    res = subprocess.run(args, capture_output=True)
+    res = subprocess.run(args, capture_output=True, **ffmpeg.QUIET)
     if res.returncode != 0 or len(res.stdout) < RATE * 2:
         return np.zeros(0)
     pcm = np.frombuffer(res.stdout[:len(res.stdout) // (2 * RATE) * 2 * RATE], np.int16).astype(np.float64)
