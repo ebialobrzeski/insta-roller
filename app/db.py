@@ -121,6 +121,14 @@ class Queue:
                 self._set(job_id, status="cancelled")
             return self._get(job_id)
 
+    def delete(self, job_id: int) -> None:
+        """Forget a job. Only the queue row goes: its folders and films are not touched."""
+        with self.lock:
+            job = self._get(job_id)
+            if job["status"] in ACTIVE:
+                raise Busy
+            self.db.execute("DELETE FROM jobs WHERE id = ?", [job_id])
+
     # --- runner side ------------------------------------------------------
     def recover(self) -> None:
         """A job that was running when the app stopped goes back to the queue, at the step it was in."""

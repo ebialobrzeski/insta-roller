@@ -6,11 +6,16 @@ It writes only there, into profiles/ and into the app's data folder. There is no
 """
 from __future__ import annotations
 
+import functools
 import json
+import math
 import os
 import re
+import shutil
 import subprocess
+import time
 import zipfile
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal
@@ -23,7 +28,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from core.config import PROFILES_DIR, Mount, Profile, Theme, list_names, load_mount, load_profile
 
+from . import people as people_page
 from .db import Busy, Queue
+from .runner import run_subprocess
 from .steps import JOB_PROFILE, OUT_DIR, cli_args, job_work, pipeline, render_steps
 from .steps import out_dir as job_out
 
@@ -32,6 +39,11 @@ REPO = Path(__file__).resolve().parent.parent
 NAME = re.compile(r"[A-Za-z0-9_\-]+")
 KINDS = {"profiles": ("", Profile), "mounts": ("mounts", Mount), "themes": ("themes", Theme)}
 VIDEO = {".insv", ".lrv", ".mp4"}
+QUALITY = {"best": "sdk", "good": "ffmpeg", "fast": "proxy"}     # the form's three choices -> --source
+PHASE = {"analyze": 0, "plan": 1, "thumbnails": 1, "render": 2, "shots": 2}    # scenes, plan, render
+SHOT = re.compile(r"shot (\d+)/(\d+)")
+TAG = re.compile(r"(.+?)_(\d+)s")       # a reel's tag: theme and length, as in reel_<tag>.mp4, shots_<tag>/
+POINTS = 300                            # barogram points sent to the browser
 
 
 class JobOptions(BaseModel):
@@ -49,7 +61,9 @@ class JobOptions(BaseModel):
     overlay: bool | None = None
     review: bool = False                    # stop after analysis + plan for the scene review
     shots: bool = False                     # also export the separate shots
-    source: Literal["auto", "proxy", "sdk"] = "auto"
+    films: bool = True                      # False = "same ujęcia": the separate shots, no finished film
+    source: Literal["auto", "proxy", "sdk", "ffmpeg"] = "auto"
+    quality: Literal["best", "good", "fast"] | None = None      # the form's name for a source, see QUALITY
 
 
 class NewJob(BaseModel):
@@ -61,6 +75,8 @@ class Settings(BaseModel):
     """The app's own settings, kept in <data>/settings.json."""
     model_config = ConfigDict(extra="forbid")
     work: str = ""                          # local cache folder (--work); empty = <output folder>/.cache
+    quality: Literal["auto", "best", "good", "fast"] = "auto"   # what the "Nowy film" form starts with
+    people_names: list[str] = []            # names exported from Immich; empty = the holiday profile's people
 
 
 class Text(BaseModel):
@@ -160,6 +176,52 @@ def names_of(data) -> list[str]:
     return []
 
 
+def find_stitcher() -> Path | None:
+    """The Media SDK stitcher, when it is built: the "Najlepsza" quality needs it."""
+    try:
+        from core import stitch
+        return stitch.find_exe()
+    except Exception:
+        return None
+
+
+@functools.lru_cache(1)
+def gpu_name() -> str:
+    """The graphics card as nvidia-smi names it; empty when it cannot be asked."""
+    try:
+        hidden = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+        asked = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                               capture_output=True, text=True, timeout=3, **hidden)
+        return asked.stdout.strip().splitlines()[0].strip() if asked.returncode == 0 and asked.stdout.strip() else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def probe_recordings(folder: Path) -> tuple[int, float]:
+    """Takes in a folder and their total length, as the CLI will see them (reads the file headers)."""
+    from core.ingest import discover
+    recordings, _ = discover(folder)
+    return len(recordings), sum(r.duration_s for r in recordings)
+
+
+def thin(samples: list[dict], limit: int = POINTS) -> list[dict]:
+    """About `limit` samples, evenly spaced; in every stretch the one that keeps the peaks."""
+    if len(samples) <= limit:
+        return samples
+    size = math.ceil(len(samples) / (limit // 2))
+    kept = []
+    for i in range(0, len(samples), size):
+        part = samples[i:i + size]
+        low, high = min(part, key=lambda s: s["alt_m"]), max(part, key=lambda s: s["alt_m"])
+        kept += sorted({id(low): low, id(high): high}.values(), key=lambda s: s["t"])
+    return kept
+
+
+def day_text(day: str) -> str:
+    """20250812 -> 12.08.2025"""
+    return f"{day[6:8]}.{day[4:6]}.{day[:4]}" if len(day) == 8 and day.isdigit() else day
+
+
 class FreshFiles(StaticFiles):
     """The UI's files, checked for changes on every load: an updated app never runs with old JS."""
 
@@ -175,12 +237,16 @@ def default_data_dir() -> Path:
 
 
 def create_app(data: str | Path | None = None, profiles: str | Path | None = None,
-               people: str | Path | None = None) -> FastAPI:
+               people: str | Path | None = None, env_file: str | Path | None = None,
+               stitcher=find_stitcher, runner=run_subprocess) -> FastAPI:
     """`data`: the app's folder (queue.db, settings.json). `profiles`: the profiles the CLI uses,
-    edited in place. `people`: the people.json whose names the form offers."""
+    edited in place. `people`: the people.json whose names the form offers and "Osoby" refreshes.
+    `env_file`: where the Immich address and key are, besides the environment. `stitcher`: returns
+    the Media SDK stitcher or None. `runner`: runs the Immich export, as app.runner.run_subprocess."""
     data = Path(data or default_data_dir())
     profiles = Path(profiles or PROFILES_DIR)
     people_file = Path(people or REPO / "people.json")
+    kinds: dict[tuple, str] = {}                        # flight / holiday per job, see kind_of
     queue = Queue(data / "queue.db")
     app = FastAPI(title="insta-roller", docs_url="/api/docs", openapi_url="/api/openapi.json")
     app.state.queue, app.state.data, app.state.profiles = queue, data, profiles
@@ -191,6 +257,10 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
             return Settings.model_validate(read_json(data / "settings.json") or {}).model_dump()
         except ValidationError:
             return Settings().model_dump()
+
+    def save(values: dict) -> None:
+        data.mkdir(parents=True, exist_ok=True)
+        (data / "settings.json").write_text(json.dumps(values, indent=2, ensure_ascii=False), encoding="utf-8")
 
     app.state.work = lambda: settings()["work"]         # for the job runner
 
@@ -203,11 +273,28 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
     def out_dir(job: dict) -> Path:
         return Path(job_out(job["folder"], job["options"]))
 
+    def kind_of(job: dict) -> str:
+        """flight or holiday, as the CLI will decide; remembered, so polling does not read the folder."""
+        key = (job["id"], job["options"].get("profile"), job["options"].get("profile_yaml"))
+        if key not in kinds:
+            profile, _ = job_config(job)
+            if profile is None:
+                return "flight"
+            kinds[key] = "holiday" if profile.kind == "holiday" else "flight"
+        return kinds[key]
+
     def view(job: dict, log_lines: int | None = None) -> dict:
         job = dict(job)
+        step = job["log"].rpartition("$ ")[2]           # the output of the step that runs now
+        shot = SHOT.findall(step)[-1:] if job["status"] == "running" else []
+        job["detail"] = {"shot": int(shot[0][0]), "of": int(shot[0][1])} if shot else None
         if log_lines:
             job["log"] = "\n".join(job["log"].splitlines()[-log_lines:])
         work = job_work(settings()["work"], job["id"])
+        job["name"], job["kind"] = Path(job["folder"]).name or job["folder"], kind_of(job)
+        job["phase"] = PHASE.get(job["stage"], 3 if job["status"] in ("done", "review") else 0)
+        job["quality"] = {v: k for k, v in QUALITY.items()}.get(job["options"].get("source"), "auto")
+        job["elapsed_s"] = round((time.time() if job["status"] == "running" else job["updated"]) - job["queued"])
         job["out"] = str(out_dir(job))
         job["commands"] = ["python -m " + subprocess.list2cmdline(cli_args(step, job["folder"], job["options"], work))
                            for step in job["steps"]]
@@ -274,7 +361,8 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
         """The folder picker. No path: the drives. Any full path works, UNC shares included."""
         if not path.strip():
             return {"path": "", "parent": None, "crumbs": [], "dirs": [{"name": d, "path": d} for d in drives()],
-                    "videos": 0, "igc": 0, "processed": False, "job": None, "out": ""}
+                    "videos": 0, "igc": 0, "processed": False, "job": None, "out": "",
+                    "recent": [{"name": Path(j["folder"]).name, "path": j["folder"]} for j in queue.list()[:6]]}
         here = absolute(path)
         if not here.is_dir():
             raise HTTPException(404, "Nie ma takiego folderu")
@@ -299,6 +387,26 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
                 "dirs": dirs, "videos": videos, "igc": igc, "processed": (here / OUT_DIR).is_dir(),
                 "job": job and job["id"], "out": str(here / OUT_DIR)}
 
+    @app.get("/api/folders/inspect")
+    def inspect(path: str):
+        """What a folder holds, for the sentence under the picker. Reads every file's header: seconds on a NAS."""
+        here = absolute(path)
+        if not here.is_dir():
+            raise HTTPException(404, "Nie ma takiego folderu")
+        try:
+            found = Counter(p.suffix.lower() for p in here.iterdir() if p.is_file())
+        except OSError as error:
+            raise HTTPException(403, f"Nie można otworzyć folderu: {error.strerror or error}")
+        try:
+            recordings, duration = probe_recordings(here)
+        except Exception:                               # FFmpeg missing, a share that went away
+            recordings, duration = None, None
+        return {"path": str(here), "recordings": recordings, "duration_s": duration and round(duration, 1),
+                "full_quality": found[".insv"], "previews": found[".lrv"], "films": found[".mp4"],
+                "igc": found[".igc"], "kind": "flight" if found[".igc"] else "holiday",
+                "usable": bool(recordings) if recordings is not None else bool(sum(found[e] for e in VIDEO)),
+                "out": str(here / OUT_DIR)}
+
     @app.get("/api/meta")
     def meta():
         """Everything the forms offer: profiles, mounts, themes, known people."""
@@ -318,7 +426,8 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
         people = names_of(read_json(people_file))
         for p in found:
             people += [n for n in p.get("people", []) if n not in people]
-        return {"profiles": found, "people": [n for n in people if n],
+        return {"profiles": found, "people": [n for n in people if n], "stitcher": stitcher() is not None,
+                "quality": settings()["quality"],
                 "mounts": each("mounts", lambda m: {"presets": list(m.presets)}),
                 "themes": each("themes", lambda t: {"title": t.title, "enabled": t.enabled,
                                                     "length": t.target_length_s})}
@@ -334,6 +443,12 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
         if not folder.is_dir():
             raise HTTPException(404, "Nie ma takiego folderu")
         options = body.options.model_dump()
+        quality = options.pop("quality")
+        if quality:
+            options["source"] = QUALITY[quality]
+        if options["source"] == "sdk" and stitcher() is None:
+            raise HTTPException(422, "Najlepsza jakość wymaga programu do sklejania Media SDK, a nie ma go na tym komputerze")
+        options["shots"] = options["shots"] or not options["films"]
         current = queue.find(str(folder))
         if options["out"].strip():
             out = absolute(options["out"])
@@ -379,6 +494,16 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
         except Busy:
             raise HTTPException(409, "Zadanie jest w kolejce albo właśnie się wykonuje")
 
+    @app.delete("/api/jobs/{job_id}")
+    def forget(job_id: int):
+        """"Usuń z listy": the project leaves the list; the recordings and the films stay on the disk."""
+        need(job_id)
+        try:
+            queue.delete(job_id)
+        except Busy:
+            raise HTTPException(409, "Najpierw zatrzymaj to zadanie")
+        return {"ok": True}
+
     @app.post("/api/jobs/{job_id}/cancel")
     def cancel(job_id: int):
         return change(job_id, lambda: queue.cancel(job_id))
@@ -405,6 +530,87 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
         return rerender(job_id)
 
     # --- UI: results ------------------------------------------------------
+    def films_in(out: Path) -> tuple[list[dict], object]:
+        """The finished films of an output folder, newest first, each with a title a person can read;
+        and the function that reads a reel tag that way."""
+        titles = {}
+        for name in list_names("themes", profiles):
+            try:
+                titles[name] = yaml.safe_load(config_path("themes", name).read_text("utf-8")).get("title") or name
+            except Exception:
+                pass
+
+        def named(tag: str) -> dict:
+            match = TAG.fullmatch(tag)
+            theme = match[1] if match else tag
+            title = (titles.get(theme) or (f"Dzień {day_text(theme[4:])}" if theme.startswith("day_") else
+                                           "Cały wyjazd" if theme == "trip" else theme))
+            return {"tag": tag, "theme": theme, "title": title, "length_s": int(match[2]) if match else None}
+
+        planned = {r.get("tag") for r in (read_json(out / "reels.json") or {}).get("reels", []) if r.get("status") == "planned"}
+        films = []
+        for p in out.glob("reel_*.mp4"):
+            stat, tag = p.stat(), p.stem[5:]
+            films.append({"name": p.name, "size": stat.st_size, "mtime": stat.st_mtime, **named(tag),
+                          "current": tag in planned})    # False: an earlier version, of another length
+        return sorted(films, key=lambda f: -f["mtime"]), named
+
+    @app.get("/api/films")
+    def films():
+        """Every finished film of every job, newest first: the overview's grid."""
+        found = []
+        for job in queue.list():
+            try:
+                found += [{**film, "job": job["id"], "job_name": Path(job["folder"]).name} for film in films_in(out_dir(job))[0]]
+            except OSError:                             # a share that is not connected now
+                pass
+        return sorted(found, key=lambda f: -f["mtime"])
+
+    @app.get("/api/jobs/{job_id}/timeline")
+    def timeline(job_id: int):
+        """The picture of a job on the overview: a flight's altitude with the chosen shots on it,
+        or a holiday's days with their clips."""
+        job = need(job_id)
+        out = out_dir(job)
+        scenes = read_json(out / "scenes.json")
+        if scenes is None:
+            raise HTTPException(409, "Zadanie nie ma jeszcze analizy (scenes.json)")
+        days = {s["id"]: s.get("attrs", {}).get("day", "") for s in scenes.get("scenes", [])}
+        shots = []
+        for entry in (read_json(out / "reels.json") or {}).get("reels", []):
+            plan = read_json(out / f"reel_plan_{entry.get('tag')}.json") if entry.get("status") == "planned" else None
+            shots += [{"reel": entry["tag"], "type": s["type"], "start_s": s["start_s"], "duration_s": s["duration_s"],
+                       "day": days.get(s["scene_id"], "")} for s in (plan or {}).get("shots", [])]
+        recordings = scenes.get("recordings") or [r for r in [scenes.get("recording")] if r]
+        if scenes.get("source") == "holiday" or any(r.get("day") for r in recordings):
+            strip: dict[str, dict] = {}
+            for r in recordings:
+                day = strip.setdefault(r.get("day", ""), {"day": r.get("day", ""), "clips": 0, "duration_s": 0.0, "shots": 0})
+                day["clips"] += 1
+                day["duration_s"] = round(day["duration_s"] + r.get("duration_s", 0.0), 1)
+            for day in strip.values():
+                day["label"] = day_text(day["day"])
+                day["shots"] = len({(s["start_s"], s["day"]) for s in shots if s["day"] == day["day"]})
+            return {"kind": "holiday", "days": [strip[d] for d in sorted(strip)], "shots": len(shots)}
+        samples = (read_json(out / "telemetry.json") or {}).get("samples", [])
+        return {"kind": "flight", "duration_s": sum(r.get("duration_s", 0.0) for r in recordings[:1]),
+                "points": [[s["t"], s["alt_m"]] for s in thin(samples)],
+                "shots": [{k: s[k] for k in ("reel", "type", "start_s", "duration_s")} for s in shots]}
+
+    @app.get("/api/status")
+    def status():
+        """The overview's "Stan" cell: what this PC has to make films with."""
+        s = settings()
+        cache = Path(s["work"]) if s["work"] else data
+        try:
+            free = shutil.disk_usage(cache if cache.exists() else cache.anchor).free
+        except OSError:
+            free = None
+        people = read_json(people_file)
+        return {"stitcher": stitcher() is not None, "gpu": gpu_name(),
+                "cache": {"path": s["work"], "free_bytes": free},
+                "people": {"present": people is not None, "count": len([n for n in names_of(people) if n])}}
+
     @app.get("/api/jobs/{job_id}/results")
     def results(job_id: int):
         out = out_dir(need(job_id))
@@ -413,8 +619,8 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
             stat = p.stat()
             return {"name": p.name, "size": stat.st_size, "mtime": stat.st_mtime}
 
-        films = sorted(map(info, out.glob("reel_*.mp4")), key=lambda f: -f["mtime"])
-        shots = [{"folder": d.name, "files": [info(f) for f in sorted(d.glob("*.mp4"))]}
+        films, named = films_in(out)
+        shots = [{"folder": d.name, **named(d.name[6:]), "files": [info(f) for f in sorted(d.glob("*.mp4"))]}
                  for d in sorted(out.glob("shots_*")) if d.is_dir()]
         reels = (read_json(out / "reels.json") or {}).get("reels", [])
         return {"films": films, "shots": [s for s in shots if s["files"]],
@@ -516,7 +722,8 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
     @app.put("/api/settings")
     def settings_put(body: Settings):
         """The cache folder is created here, so a path that cannot be used is refused at once."""
-        work = body.work.strip()
+        new = {**settings(), **body.model_dump(exclude_unset=True)}
+        work = new["work"].strip()
         if work:
             work = str(absolute(work))
             try:
@@ -524,7 +731,7 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
             except OSError as error:
                 raise HTTPException(422, f"Nie można utworzyć folderu: {error.strerror or error}")
         data.mkdir(parents=True, exist_ok=True)
-        (data / "settings.json").write_text(json.dumps({"work": work}, indent=2), encoding="utf-8")
+        save({**new, "work": work})
         return settings_get()
 
     @app.post("/api/config/compose")
@@ -556,6 +763,8 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(body.text, encoding="utf-8")
         return {"ok": True, "name": name}
+
+    people_page.add_routes(app, people_file, Path(env_file or REPO / ".env"), profiles, runner, settings, save)
 
     # --- the UI itself ----------------------------------------------------
     @app.get("/", include_in_schema=False)

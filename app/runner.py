@@ -69,10 +69,11 @@ def kill_tree(proc: subprocess.Popen) -> None:
     proc.wait()
 
 
-def run_subprocess(cmd: list[str], on_line, poll) -> int:
+def run_subprocess(cmd: list[str], on_line, poll, env: dict | None = None) -> int:
     """Run one step. on_line(text) gets every output line; poll() is called at least once a
-    second and returns True when the step must be stopped (cancelled, or the app is closing)."""
-    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
+    second and returns True when the step must be stopped (cancelled, or the app is closing).
+    `env` adds variables for the step: secrets go there, never on the command line."""
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1", **(env or {}))
     # Its own process group: Ctrl+C in the app's console does not reach the step; the app stops it.
     own = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,

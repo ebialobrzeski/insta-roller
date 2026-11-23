@@ -4,180 +4,36 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>insta-roller</title>
+<script>
+  // The remembered theme, before the first paint.
+  try { const t = JSON.parse(localStorage.getItem("theme")); if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t); } catch (error) {}
+</script>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<header>
-  <h1>insta-roller</h1>
-  <nav>
-    <a href="#nowe">Nowe zadanie</a>
-    <a href="#kolejka">Kolejka</a>
-    <a href="#wyniki">Wyniki</a>
-    <a href="#ustawienia">Ustawienia</a>
-  </nav>
-</header>
-<div id="toast" hidden></div>
-
-<main>
-<!-- 1. Nowe zadanie -->
-<section id="nowe" hidden>
-  <h2>Nowe zadanie</h2>
-  <div class="card">
-    <h3>Folder z nagraniami</h3>
-    <div class="row">
-      <input id="f-path" type="text" autocomplete="off" spellcheck="false" style="flex:1;margin:0"
-             placeholder="wklej ścieżkę, np. D:\Wideo\lot albo \\nas\wideo\lot">
-      <button type="button" id="f-go">Przejdź</button>
+<div class="app" id="app">
+  <aside class="side" id="side" aria-label="Menu">
+    <a class="brand" href="#przeglad" id="brand"><span>insta-roller</span></a>
+    <nav class="nav" id="nav"></nav>
+    <div class="side-foot">
+      <a class="notice" id="notice" href="#nowy"></a>
+      <a class="now" id="now" href="#filmy" title="Co aplikacja robi teraz"><i class="dot"></i><span id="now-text">Bezczynna</span></a>
+      <div id="theme"></div>
+      <button class="collapse" id="collapse" type="button"></button>
     </div>
-    <div id="crumbs" class="crumbs"></div>
-    <ul id="dirs" class="dirs"></ul>
-    <p id="folder-info" class="muted"></p>
-    <label>Folder wyników
-      <input id="f-out" type="text" autocomplete="off" spellcheck="false">
-    </label>
-    <p class="muted">Puste pole: podfolder <code>insta-roller</code> w folderze z nagraniami. Nagrania nie są zmieniane.</p>
+  </aside>
+  <button class="scrim" id="scrim" type="button" aria-label="Zamknij menu"></button>
+  <div class="main">
+    <header class="top">
+      <button class="btn menu" id="menu" type="button" aria-label="Menu"></button>
+      <div class="context" id="context"></div>
+      <a class="btn" href="#filmy" id="top-films"></a>
+      <a class="btn primary" href="#nowy" id="top-new"></a>
+    </header>
+    <main class="frame" id="view"></main>
   </div>
-  <div class="card grid">
-    <label>Profil
-      <select id="f-profile"></select>
-    </label>
-    <label>Montaż kamery
-      <select id="f-mount"></select>
-    </label>
-    <label>Długość filmu (s)
-      <input id="f-length" type="number" min="5" step="1" inputmode="decimal">
-    </label>
-    <label id="row-mode">Tryb (urlop)
-      <select id="f-mode">
-        <option value="day">dzień – film na każdy dzień</option>
-        <option value="trip">wyjazd – jeden film z całości</option>
-        <option value="both">oba</option>
-      </select>
-    </label>
-    <label>Nakładka z danymi lotu
-      <select id="f-overlay">
-        <option value="">jak w profilu</option>
-        <option value="1">włączona</option>
-        <option value="0">wyłączona</option>
-      </select>
-    </label>
-    <label>Źródło obrazu
-      <select id="f-source">
-        <option value="auto">automatycznie (najlepsze)</option>
-        <option value="proxy">tylko proxy (szybko, niska jakość)</option>
-        <option value="sdk">stitcher Media SDK</option>
-      </select>
-    </label>
-  </div>
-  <div class="card">
-    <h3>Tematy rolek</h3>
-    <div id="f-themes" class="checks"></div>
-    <h3>Osoby</h3>
-    <div id="f-people" class="checks"></div>
-    <label>Inne osoby (imiona po przecinku)
-      <input id="f-people-extra" type="text" autocomplete="off">
-    </label>
-  </div>
-  <div class="card" id="custom" hidden>
-    <h3>Profil „inne” – własne ustawienia</h3>
-    <div class="grid">
-      <label>Na podstawie profilu <select id="c-base"></select></label>
-      <label>Format
-        <select id="c-format">
-          <option value="">bez zmiany</option>
-          <option value="1080x1920">9:16 (pion)</option>
-          <option value="1920x1080">16:9 (poziom)</option>
-          <option value="1080x1080">1:1 (kwadrat)</option>
-        </select>
-      </label>
-      <label>Dźwięk
-        <select id="c-audio">
-          <option value="">bez zmiany</option>
-          <option value="1">oryginalny</option>
-          <option value="0">ujęcia nieme</option>
-        </select>
-      </label>
-      <label>Zapas na końcach ujęć (s) <input id="c-handles" type="number" min="0" step="0.5"></label>
-    </div>
-    <button type="button" id="c-compose">Wstaw ustawienia do YAML</button>
-    <label>Wszystkie ustawienia (YAML)
-      <textarea id="c-yaml" rows="16" spellcheck="false"></textarea>
-    </label>
-    <div class="row">
-      <button type="button" id="c-check">Sprawdź</button>
-      <input id="c-name" type="text" placeholder="nazwa_nowego_profilu" autocomplete="off">
-      <button type="button" id="c-save">Zapisz jako nowy profil</button>
-    </div>
-  </div>
-  <div class="card">
-    <label class="switch"><input id="f-review" type="checkbox"> Przegląd scen – zatrzymaj po analizie i planie</label>
-    <label class="switch"><input id="f-shots" type="checkbox"> Eksport ujęć – osobne pliki do montażu w telefonie</label>
-    <button type="button" id="f-submit" class="primary">Dodaj do kolejki</button>
-  </div>
-</section>
-
-<!-- 2. Kolejka -->
-<section id="kolejka" hidden>
-  <h2>Kolejka</h2>
-  <div id="jobs"></div>
-</section>
-
-<!-- 3. Wyniki -->
-<section id="wyniki" hidden>
-  <h2>Wyniki <button type="button" id="r-refresh" class="small">Odśwież</button></h2>
-  <div id="results"></div>
-</section>
-
-<!-- 4. Ustawienia -->
-<section id="ustawienia" hidden>
-  <h2>Ustawienia</h2>
-  <div class="card">
-    <div class="grid">
-      <label>Rodzaj
-        <select id="s-kind">
-          <option value="profiles">profile</option>
-          <option value="mounts">montaże kamery</option>
-          <option value="themes">tematy rolek</option>
-        </select>
-      </label>
-      <label>Plik <select id="s-name"></select></label>
-    </div>
-    <textarea id="s-yaml" rows="24" spellcheck="false"></textarea>
-    <div class="row">
-      <button type="button" id="s-check">Sprawdź</button>
-      <button type="button" id="s-save" class="primary">Zapisz</button>
-    </div>
-    <p class="muted">Nowy plik: zmień pole <code>name</code> w YAML i zapisz – powstanie plik o tej nazwie.
-      Pliki leżą w folderze <code id="s-profiles">profiles</code>; kolejne zadania używają ich od razu.</p>
-  </div>
-  <div class="card">
-    <h3>Folder pamięci podręcznej</h3>
-    <label>Lokalny, szybki dysk na proxy i pliki robocze (opcja <code>--work</code>)
-      <input id="s-work" type="text" autocomplete="off" spellcheck="false"
-             placeholder="puste: podfolder .cache w folderze wyników zadania">
-    </label>
-    <div class="row">
-      <button type="button" id="s-work-save" class="primary">Zapisz</button>
-    </div>
-    <p class="muted">Kolejka i ustawienia aplikacji: <code id="s-data"></code></p>
-  </div>
-</section>
-
-<!-- Przegląd scen -->
-<section id="przeglad" hidden>
-  <h2>Przegląd scen <span id="v-title" class="muted"></span></h2>
-  <div class="card row sticky">
-    <label class="switch"><input id="v-zone" type="checkbox"> strefa bezpieczna</label>
-    <button type="button" id="v-save">Zapisz</button>
-    <button type="button" id="v-render" class="primary">Renderuj</button>
-  </div>
-  <div id="v-reels"></div>
-  <div class="card">
-    <h3>Niewykorzystane sceny</h3>
-    <div id="v-unused"></div>
-  </div>
-</section>
-</main>
-<script src="/static/app.js"></script>
+</div>
+<div id="toast" role="status" hidden></div>
+<script type="module" src="/static/app.js"></script>
 </body>
 </html>

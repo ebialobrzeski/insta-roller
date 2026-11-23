@@ -20,7 +20,8 @@ def pipeline(options: dict) -> tuple[list[str], str]:
 
 def render_steps(options: dict) -> list[str]:
     """Steps after the scenes are known: a reviewed job, or a new version with another length."""
-    return ["plan", "render"] + (["shots"] if options.get("shots") else [])
+    films = options.get("films", True)          # False = "same ujęcia": only the separate shots
+    return ["plan"] + (["render"] if films else []) + (["shots"] if options.get("shots") or not films else [])
 
 
 def out_dir(folder: str, options: dict) -> str:

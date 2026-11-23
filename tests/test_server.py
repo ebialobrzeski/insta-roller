@@ -16,6 +16,7 @@ import pytest
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient      # noqa: E402
 
+from app import web                            # noqa: E402
 from app.__main__ import free_port, lock       # noqa: E402
 from app.runner import REPO, Runner, run_subprocess     # noqa: E402
 from app.steps import cli_args                 # noqa: E402
@@ -34,12 +35,15 @@ class Env:
         self.lot2.mkdir()
         (tmp_path / "secret.txt").write_text("outside every output folder")
         self.profiles = shutil.copytree(PROFILES_DIR, tmp_path / "profiles")
-        self.people = tmp_path / "people.json"
+        self.people, self.env_file = tmp_path / "people.json", tmp_path / ".env"
+        self.stitcher = None                    # the Media SDK stitcher is "not built" unless a test says so
+        self.immich = FakeImmich()
         self.start()
 
     def start(self) -> None:
         """Start the app; again = the app was closed and started on the same data folder."""
-        self.app = create_app(self.data, self.profiles, self.people)
+        self.app = create_app(self.data, self.profiles, self.people, self.env_file,
+                              stitcher=lambda: self.stitcher, runner=self.immich)
         self.queue, self.client = self.app.state.queue, TestClient(self.app)
 
     def submit(self, folder: Path | str | None = None, **options) -> dict:
@@ -58,8 +62,23 @@ class Env:
         self.queue.finish(self.queue.claim()["id"], status)
 
 
+class FakeImmich:
+    """Stands in for the subprocess runner of the Immich export: records the command and its environment."""
+
+    def __init__(self):
+        self.calls, self.code = [], 0
+
+    def __call__(self, cmd, on_line, poll, env=None) -> int:
+        self.calls.append((cmd, env))
+        on_line(f"faces-export: asking {cmd[cmd.index('--immich-url') + 1]} with key {env['IMMICH_API_KEY']}")
+        on_line("faces-export: 2 people" if self.code == 0 else "faces-export: Immich said 401")
+        return self.code
+
+
 @pytest.fixture
-def env(tmp_path) -> Env:
+def env(tmp_path, monkeypatch) -> Env:
+    for name in ("IMMICH_TAILSCALE_ADDRESS", "IMMICH_ADDRESS", "IMMICH_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
     return Env(tmp_path)
 
 
@@ -325,7 +344,8 @@ def test_custom_output_folder_goes_to_the_cli_as_out(env):
 
 def test_cache_folder_setting_goes_to_the_cli_as_work(env):
     client = env.client
-    assert client.get("/api/settings").json() == {"work": "", "data": str(env.data), "profiles": str(env.profiles)}
+    assert client.get("/api/settings").json() == {"work": "", "quality": "auto", "people_names": [],
+                                                  "data": str(env.data), "profiles": str(env.profiles)}
     work = env.tmp / "cache"
     assert client.put("/api/settings", json={"work": "cache"}).status_code == 400
     assert client.put("/api/settings", json={"work": str(env.lot1 / "lot.igc" / "x")}).status_code == 422
@@ -338,8 +358,11 @@ def test_cache_folder_setting_goes_to_the_cli_as_work(env):
     assert fake.last[-1] == f"--work={work / 'job_1'}"
     env.start()                                                      # settings outlive the app
     assert client.get("/api/settings").json()["work"] == str(work)
-    assert env.client.put("/api/settings", json={"work": ""}).json()["work"] == ""
-    assert "--work" not in env.job()["commands"][0]
+    assert env.client.put("/api/settings", json={"quality": "good"}).json()["work"] == str(work)     # one setting at a time
+    assert env.client.put("/api/settings", json={"quality": "nonsense"}).status_code == 422
+    assert env.client.put("/api/settings", json={"work": ""}).json() == {
+        "work": "", "quality": "good", "people_names": [], "data": str(env.data), "profiles": str(env.profiles)}
+    assert "--work" not in env.job()["commands"][0] and env.client.get("/api/meta").json()["quality"] == "good"
 
 
 # --- settings ------------------------------------------------------------------
@@ -402,10 +425,16 @@ def test_people_offered_from_people_json(env):
 
 def test_ui_pages_are_served(env):
     page = env.client.get("/")
-    assert page.status_code == 200 and "Nowe zadanie" in page.text and "Kolejka" in page.text
-    assert "Folder wyników" in page.text and "Folder pamięci podręcznej" in page.text
-    assert env.client.get("/static/app.js").status_code == 200 and env.client.get("/static/style.css").status_code == 200
-    assert env.client.get("/static/app.js").headers["cache-control"] == "no-cache"      # an updated app, never old JS
+    assert page.status_code == 200 and 'id="view"' in page.text and "/static/app.js" in page.text
+    assert "http://" not in page.text and "https://" not in page.text                # works offline: nothing from the web
+    files = {name: env.client.get(f"/static/{name}") for name in (
+        "app.js", "ui.js", "live.js", "home.js", "wizard.js", "films.js", "review.js", "people.js", "settings.js", "style.css")}
+    assert all(r.status_code == 200 and r.headers["cache-control"] == "no-cache" for r in files.values())   # never old JS
+    assert all(text in files["app.js"].text for text in ("Przegląd", "Nowy film", "Filmy", "Osoby", "Ustawienia"))
+    assert "Zrób film" in files["wizard.js"].text and "Renderuj" in files["review.js"].text
+    css = files["style.css"].text
+    assert "prefers-color-scheme: dark" in css and ':root[data-theme="dark"]' in css and 'not([data-theme="light"])' in css
+    assert not any("@import" in r.text or "//fonts." in r.text or "cdn" in r.text.lower() for r in files.values())
 
 
 # --- the commands must be ones the real CLI accepts ----------------------------------
@@ -646,3 +675,250 @@ def test_port_and_single_instance(tmp_path):
     again = lock(tmp_path / "data")
     assert again is not None
     again.close()
+
+
+# --- the redesigned UI's endpoints ---------------------------------------------------------
+def test_quality_choice_becomes_the_cli_source(env):
+    post = env.client.post
+    good = env.submit(quality="good", profile="flight")
+    assert good["options"]["source"] == "ffmpeg" and "quality" not in good["options"] and good["quality"] == "good"
+    assert all(c.endswith("--source=ffmpeg") for c in good["commands"])
+    fast = env.submit(quality="fast")
+    assert (fast["options"]["source"], fast["quality"]) == ("proxy", "fast") and "--source=proxy" in fast["commands"][0]
+    best = {"folder": str(env.lot1), "options": {"quality": "best"}}
+    assert post("/api/jobs", json=best).status_code == 422                    # the stitcher is not built
+    assert post("/api/jobs", json={"folder": str(env.lot1), "options": {"source": "sdk"}}).status_code == 422
+    assert env.client.get("/api/meta").json()["stitcher"] is False
+    env.stitcher = Path("insta-stitcher.exe")
+    assert env.client.get("/api/meta").json()["stitcher"] is True
+    assert env.submit(quality="best")["options"]["source"] == "sdk"
+    plain = env.submit()                                                     # no choice: the CLI decides
+    assert (plain["options"]["source"], plain["quality"]) == ("auto", "auto") and "--source" not in plain["commands"][0]
+    assert post("/api/jobs", json={"folder": str(env.lot1), "options": {"quality": "ultra"}}).status_code == 422
+    fake = FakeCli()
+    env.submit(quality="good", profile="flight")
+    env.runner(fake, python="py").run_once()
+    assert fake.last[-1] == "--source=ffmpeg"
+
+
+def test_shots_only_job_skips_the_film(env):
+    only = env.submit(films=False)
+    assert only["steps"] == ["analyze", "plan", "shots"] and only["options"]["shots"] is True
+    reviewed = env.submit(films=False, review=True)
+    assert reviewed["steps"] == ["analyze", "plan", "thumbnails"]
+    fill_output(env.lot1 / "insta-roller")
+    env.finish()
+    assert env.client.post("/api/jobs/1/render").json()["steps"] == ["plan", "shots"]
+
+
+def test_folder_summary_for_the_wizard(env, monkeypatch):
+    client = env.client
+    for name in ("VID_1.insv", "VID_2.insv", "LRV_1.lrv", "notes.txt"):
+        (env.lot1 / name).write_text("x")
+    monkeypatch.setattr(web, "probe_recordings", lambda folder: (2, 3725.04))
+    found = client.get("/api/folders/inspect", params={"path": str(env.lot1)}).json()
+    assert found == {"path": str(env.lot1), "recordings": 2, "duration_s": 3725.0, "full_quality": 2, "previews": 1,
+                     "films": 0, "igc": 1, "kind": "flight", "usable": True, "out": str(env.lot1 / "insta-roller")}
+
+    monkeypatch.setattr(web, "probe_recordings", lambda folder: (0, 0.0))
+    empty = client.get("/api/folders/inspect", params={"path": str(env.lot2)}).json()
+    assert (empty["kind"], empty["usable"], empty["igc"], empty["recordings"]) == ("holiday", False, 0, 0)
+
+    def broken(folder):
+        raise RuntimeError("FFmpeg not found")
+
+    monkeypatch.setattr(web, "probe_recordings", broken)                     # lengths unknown: the files still count
+    unknown = client.get("/api/folders/inspect", params={"path": str(env.lot1)}).json()
+    assert (unknown["recordings"], unknown["duration_s"], unknown["usable"]) == (None, None, True)
+    assert client.get("/api/folders/inspect", params={"path": str(env.lot2)}).json()["usable"] is False
+    assert client.get("/api/folders/inspect", params={"path": "lot1"}).status_code == 400
+    assert client.get("/api/folders/inspect", params={"path": str(env.root / "none")}).status_code == 404
+
+    assert client.get("/api/folders").json()["recent"] == []
+    env.submit()
+    assert client.get("/api/folders").json()["recent"] == [{"name": "lot1", "path": str(env.lot1)}]
+
+
+def test_timeline_is_a_barogram_for_a_flight(env):
+    client = env.client
+    job = env.submit(profile="flight")
+    url = f"/api/jobs/{job['id']}/timeline"
+    assert client.get(url).status_code == 409                               # no scenes yet
+    out = fill_output(env.lot1 / "insta-roller")
+    samples = [{"t": float(t), "alt_m": 200.0 + t % 97, "speed_kmh": 90.0, "vario_ms": 0.0, "bank_deg": 0.0} for t in range(900)]
+    samples[431]["alt_m"] = 1987.0                                          # one short peak must survive the thinning
+    (out / "telemetry.json").write_text(json.dumps({"version": 1, "source": "igc", "samples": samples}))
+    data = client.get(url).json()
+    assert data["kind"] == "flight" and data["duration_s"] == 900.0
+    assert 100 < len(data["points"]) <= web.POINTS and [431.0, 1987.0] in data["points"]
+    assert [p[0] for p in data["points"]] == sorted(p[0] for p in data["points"])
+    assert data["points"][0][0] == 0.0 and data["points"][-1][0] >= 890.0
+    assert sorted((s["reel"], s["type"], s["start_s"], s["duration_s"]) for s in data["shots"]) == [
+        ("flight_summary_45s", "takeoff", 100.0, 5.0), ("thermal_30s", "thermal", 346.0, 8.0)]
+    (out / "telemetry.json").unlink()                                       # scenes without telemetry: an empty chart
+    assert client.get(url).json()["points"] == []
+    assert client.get("/api/jobs/99/timeline").status_code == 404
+
+
+def test_timeline_is_a_day_strip_for_a_holiday(env):
+    job = env.submit(env.lot2, profile="holiday")
+    out = env.lot2 / "insta-roller"
+    out.mkdir()
+    recs = [{"id": f"r{i}", "kind": "insv", "files": [f"{i}.insv"], "duration_s": 20.0 + i, "day": day}
+            for i, day in enumerate(["20250812", "20250812", "20250814"])]
+    scenes = [{"id": f"s{i}", "type": "view", "start_s": 2.0, "end_s": 9.0, "score": 0.5, "recording": r["id"],
+               "attrs": {"day": r["day"]}} for i, r in enumerate(recs)]
+    (out / "scenes.json").write_text(json.dumps({"version": 1, "source": "holiday", "recordings": recs, "scenes": scenes}))
+    (out / "reels.json").write_text(json.dumps({"reels": [{"theme": "day_20250812", "tag": "day_20250812_30s", "status": "planned"}]}))
+    shots = [{"index": 1, "scene_id": "s0", "type": "view", "start_s": 3.0, "duration_s": 4.0, "framing": ["view"]}]
+    (out / "reel_plan_day_20250812_30s.json").write_text(json.dumps({"theme": "day_20250812", "shots": shots}))
+    data = env.client.get(f"/api/jobs/{job['id']}/timeline").json()
+    assert data == {"kind": "holiday", "shots": 1, "days": [
+        {"day": "20250812", "label": "12.08.2025", "clips": 2, "duration_s": 41.0, "shots": 1},
+        {"day": "20250814", "label": "14.08.2025", "clips": 1, "duration_s": 22.0, "shots": 0}]}
+    assert env.job(job["id"])["kind"] == "holiday"
+
+
+def test_films_have_titles_and_versions(env):
+    client = env.client
+    job = env.submit(shots=True)
+    out = fill_output(env.lot1 / "insta-roller")
+    for name in ("reel_thermal_30s.mp4", "reel_thermal_15s.mp4", "reel_day_20250812_60s.mp4", "reel_trip_180s.mp4"):
+        (out / name).write_bytes(b"film")
+    (out / "shots_thermal_30s").mkdir()
+    (out / "shots_thermal_30s" / "01.mp4").write_bytes(b"shot")
+    films = {f["name"]: f for f in client.get("/api/films").json()}
+    assert len(films) == 4 and all((f["job"], f["job_name"]) == (job["id"], "lot1") for f in films.values())
+    now = films["reel_thermal_30s.mp4"]
+    assert (now["title"], now["theme"], now["length_s"], now["current"]) == ("Komin", "thermal", 30, True)
+    assert films["reel_thermal_15s.mp4"]["current"] is False                 # an earlier version, another length
+    assert films["reel_day_20250812_60s.mp4"]["title"] == "Dzień 12.08.2025" and films["reel_trip_180s.mp4"]["title"] == "Cały wyjazd"
+    results = client.get(f"/api/jobs/{job['id']}/results").json()
+    assert {f["name"]: f["title"] for f in results["films"]} == {name: f["title"] for name, f in films.items()}
+    assert (results["shots"][0]["title"], results["shots"][0]["length_s"]) == ("Komin", 30)
+
+
+def test_job_state_in_words_needs_phase_and_shot(env):
+    job = env.submit(profile="flight")
+    assert (job["name"], job["kind"], job["phase"], job["detail"]) == ("lot1", "flight", 0, None)
+    env.queue.claim()
+    env.queue.report(job["id"], 1, 0.4, ["$ py -m core.cli analyze x", "  shot 5/9", "$ py -m core.cli plan x", "plan: ok"])
+    seen = env.job()
+    assert (seen["stage"], seen["phase"], seen["detail"]) == ("plan", 1, None)      # the old step's shots do not count
+    env.queue.report(job["id"], 2, 0.8, ["$ py -m core.cli render x", "  shot 2/9  scene", "  shot 3/9  scene"])
+    seen = env.job()
+    assert (seen["stage"], seen["phase"], seen["detail"]) == ("render", 2, {"shot": 3, "of": 9})
+    assert seen["elapsed_s"] >= 0 and env.client.get("/api/jobs").json()[0]["detail"] == {"shot": 3, "of": 9}
+    env.queue.finish(job["id"], "done")
+    assert (env.job()["phase"], env.job()["detail"]) == (3, None)
+    assert env.submit(env.lot2)["kind"] == "holiday"                         # no flight log in the folder
+
+
+def test_status_tells_what_the_pc_has(env, monkeypatch):
+    monkeypatch.setattr(web, "gpu_name", lambda: "Test GPU")
+    status = env.client.get("/api/status").json()
+    assert status["stitcher"] is False and status["gpu"] == "Test GPU"
+    assert status["people"] == {"present": False, "count": 0} and status["cache"]["path"] == "" and status["cache"]["free_bytes"] > 0
+    env.stitcher = Path("insta-stitcher.exe")
+    env.people.write_text(json.dumps({"people": [{"name": "Ala", "embeddings": [[0.1], [0.2]]}, {"name": "Olek", "embeddings": []}]}))
+    env.client.put("/api/settings", json={"work": str(env.tmp / "cache")})
+    status = env.client.get("/api/status").json()
+    assert status["stitcher"] is True and status["people"] == {"present": True, "count": 2}
+    assert status["cache"]["path"] == str(env.tmp / "cache") and status["cache"]["free_bytes"] > 0
+
+
+SECRET = "key-0123456789-secret"
+
+
+def test_people_page_lists_people_and_never_shows_the_key(env):
+    client = env.client
+    page = client.get("/api/people").json()
+    assert (page["present"], page["people"], page["refresh"]["status"]) == (False, [], "idle")
+    assert page["env"] == {"IMMICH_TAILSCALE_ADDRESS": False, "IMMICH_ADDRESS": False, "IMMICH_API_KEY": False}
+    holiday = web.yaml.safe_load((env.profiles / "holiday.yaml").read_text("utf-8"))
+    assert page["names"] == list(holiday.get("people") or {})                # the default: the holiday profile's people
+
+    env.people.write_text(json.dumps({"format": "insta-roller-people", "version": 1, "exported_at": "2026-11-23T15:15:24+00:00",
+                                      "people": [{"name": "Ala", "embeddings": [[0.1]] * 50}, {"name": "Olek", "embeddings": [[0.2]] * 7}]}))
+    env.env_file.write_text(f'# Immich\nIMMICH_ADDRESS="nas.example:2283"\nexport IMMICH_API_KEY={SECRET}\n', encoding="utf-8")
+    seen = client.get("/api/people")
+    page = seen.json()
+    assert page["people"] == [{"name": "Ala", "samples": 50}, {"name": "Olek", "samples": 7}]
+    assert page["present"] and page["exported_at"] == "2026-11-23T15:15:24+00:00"
+    assert page["env"] == {"IMMICH_TAILSCALE_ADDRESS": False, "IMMICH_ADDRESS": True, "IMMICH_API_KEY": True}
+    assert SECRET not in seen.text and "nas.example" not in seen.text
+
+
+def test_people_refresh_runs_faces_export_with_the_key_in_the_environment(env, monkeypatch):
+    client = env.client
+
+    def refresh(names):
+        return client.post("/api/people/refresh", json={"names": names})
+
+    assert refresh(["Ala"]).status_code == 409                               # no key
+    env.env_file.write_text(f"IMMICH_API_KEY={SECRET}\n", encoding="utf-8")
+    assert refresh(["Ala"]).status_code == 409                               # no address
+    env.env_file.write_text(f"IMMICH_ADDRESS=nas.example:2283\nIMMICH_API_KEY={SECRET}\n", encoding="utf-8")
+    assert refresh([]).status_code == 422 and refresh(["Ala,Olek"]).status_code == 422 and refresh(["--out"]).status_code == 422
+    assert env.immich.calls == []
+
+    assert refresh(["Ala", " Łukasz Kowalski "]).json() == {"status": "running"}
+    assert wait_for(lambda: client.get("/api/people").json()["refresh"]["status"] != "running")
+    cmd, child_env = env.immich.calls[0]
+    assert cmd[1:5] == ["-u", "-m", "core.cli", "faces-export"]              # the ordinary CLI command
+    assert cmd[cmd.index("--people") + 1] == "Ala,Łukasz Kowalski" and cmd[cmd.index("--out") + 1] == str(env.people)
+    assert cmd[cmd.index("--immich-url") + 1] == "http://nas.example:2283" and cmd[cmd.index("--api-key-env") + 1] == "IMMICH_API_KEY"
+    assert child_env == {"IMMICH_API_KEY": SECRET} and SECRET not in " ".join(cmd)       # the key travels in the environment only
+    seen = client.get("/api/people")
+    page = seen.json()
+    assert page["refresh"]["status"] == "done" and page["refresh"]["error"] == ""
+    assert SECRET not in seen.text and "nas.example" not in seen.text        # not in the log either
+    assert "%IMMICH_API_KEY%" in page["refresh"]["log"][1] and "%IMMICH_ADDRESS%" in page["refresh"]["log"][0]
+    assert page["names"] == ["Ala", "Łukasz Kowalski"]                       # remembered for the next time
+    assert json.loads((env.data / "settings.json").read_text("utf-8"))["people_names"] == ["Ala", "Łukasz Kowalski"]
+
+    env.immich.code = 1                                                      # Immich refused
+    monkeypatch.setenv("IMMICH_API_KEY", "from-the-environment")             # the environment wins over .env
+    assert refresh(["Ala"]).status_code == 200
+    assert wait_for(lambda: client.get("/api/people").json()["refresh"]["status"] != "running")
+    page = client.get("/api/people").json()
+    assert page["refresh"]["status"] == "error" and "401" in page["refresh"]["error"]
+    assert env.immich.calls[1][1] == {"IMMICH_API_KEY": "from-the-environment"}
+
+
+def test_people_refresh_tries_the_tailscale_address_first(env):
+    import socket
+    with socket.socket() as up:
+        up.bind(("127.0.0.1", 0))
+        up.listen()
+        with socket.socket() as probe:                                       # a port nothing listens on
+            probe.bind(("127.0.0.1", 0))
+            down = probe.getsockname()[1]
+        lines = f"IMMICH_ADDRESS=http://home.example:2283\nIMMICH_API_KEY={SECRET}\nIMMICH_TAILSCALE_ADDRESS="
+        for tailscale, expected in ((f"127.0.0.1:{up.getsockname()[1]}", f"http://127.0.0.1:{up.getsockname()[1]}"),
+                                    (f"127.0.0.1:{down}", "http://home.example:2283")):
+            env.env_file.write_text(lines + tailscale + "\n", encoding="utf-8")
+            assert env.client.post("/api/people/refresh", json={"names": ["Ala"]}).status_code == 200
+            assert wait_for(lambda: env.client.get("/api/people").json()["refresh"]["status"] != "running")
+            cmd = env.immich.calls[-1][0]
+            assert cmd[cmd.index("--immich-url") + 1] == expected
+
+
+def test_a_step_gets_extra_environment_and_utf8():
+    lines: list[str] = []
+    code = run_subprocess([sys.executable, "-c", "import os; print(os.environ['IMMICH_API_KEY'], os.environ['PYTHONIOENCODING'], 'Łukasz')"],
+                          lines.append, lambda: False, {"IMMICH_API_KEY": "k"})
+    assert (code, lines) == (0, ["k utf-8 Łukasz"])
+
+
+def test_a_project_can_be_removed_from_the_list_but_its_files_stay(env):
+    job = env.submit()
+    out = fill_output(env.lot1 / "insta-roller")
+    (out / "reel_thermal_30s.mp4").write_bytes(b"film")
+    url = f"/api/jobs/{job['id']}"
+    assert env.client.delete(url).status_code == 409                          # queued: stop it first
+    env.finish()
+    assert env.client.delete(url).json() == {"ok": True}
+    assert env.client.get("/api/jobs").json() == [] and env.client.delete(url).status_code == 404
+    assert (out / "reel_thermal_30s.mp4").exists() and (env.lot1 / "lot.igc").exists()
+    assert env.submit()["existing"] is False                                  # the folder can become a project again
