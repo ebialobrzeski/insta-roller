@@ -922,3 +922,179 @@ def test_a_project_can_be_removed_from_the_list_but_its_files_stay(env):
     assert env.client.get("/api/jobs").json() == [] and env.client.delete(url).status_code == 404
     assert (out / "reel_thermal_30s.mp4").exists() and (env.lot1 / "lot.igc").exists()
     assert env.submit()["existing"] is False                                  # the folder can become a project again
+
+
+# --- the application window (app/desktop.py), without a display ----------------------------------------
+from app import desktop                         # noqa: E402
+from app.__main__ import parse, show_running    # noqa: E402
+from app.steps import python_exe                # noqa: E402
+
+
+class FakeWindow:
+    def __init__(self, answer):
+        self.answer, self.asked = answer, []
+
+    def create_file_dialog(self, kind, directory="", **more):
+        self.asked.append((kind, directory))
+        return self.answer
+
+
+def test_folder_dialog_result_becomes_a_path(tmp_path):
+    webview = pytest.importorskip("webview")
+    window = FakeWindow((str(tmp_path / "lot"),))                             # pywebview answers with a tuple
+    api = desktop.Api(window)
+    assert api.choose_folder(str(tmp_path)) == str(tmp_path / "lot")
+    kind, start = window.asked[0]
+    assert start == str(tmp_path) and kind in (getattr(getattr(webview, "FileDialog", None), "FOLDER", None), webview.FOLDER_DIALOG)
+    api.choose_folder(str(tmp_path / "gone"))                                 # a start folder that is not there is not passed on
+    assert window.asked[1][1] == ""
+    assert desktop.Api(FakeWindow(None)).choose_folder("") == "" and desktop.Api(FakeWindow(())).choose_folder("") == ""
+    assert desktop.Api(FakeWindow(str(tmp_path))).choose_folder("") == str(tmp_path)
+    assert not hasattr(desktop.Api, "window")                                 # nothing but the two functions is offered to the page
+    assert [n for n in dir(desktop.Api) if not n.startswith("_")] == ["choose_folder", "reveal"]
+
+
+def test_reveal_in_explorer_builds_the_command(tmp_path):
+    film = tmp_path / "wyniki z lotu" / "reel_thermal_30s.mp4"
+    film.parent.mkdir()
+    film.write_bytes(b"film")
+    started = []
+    api = desktop.Api(None, launch=started.append)
+    assert api.reveal(str(film)) is True and api.reveal(str(film.parent)) is True
+    assert started == [["explorer.exe", "/select,", str(film)], ["explorer.exe", str(film.parent)]]
+    assert api.reveal(str(tmp_path / "gone.mp4")) is False and api.reveal("reel.mp4") is False and len(started) == 2
+
+
+def test_closing_the_window_quits_when_idle_and_asks_when_a_film_is_made():
+    def never():
+        raise AssertionError("nothing is running: no question")
+
+    assert desktop.close_decision(False, never) == "quit"
+    assert desktop.close_decision(True, lambda: "hide") == "hide"            # keep working, in the tray
+    assert desktop.close_decision(True, lambda: "quit") == "quit"            # stop and close
+    assert desktop.close_decision(True, lambda: "stay") == "stay" and desktop.close_decision(True, lambda: None) == "stay"
+
+
+def test_start_options_choose_window_browser_or_nothing():
+    assert parse([]).mode == "window" and parse(["--browser"]).mode == "browser" and parse(["--no-browser"]).mode == "headless"
+    args = parse(["--no-browser", "--port", "9000", "--data", "x", "--host", "0.0.0.0"])
+    assert (args.port, args.data, args.host) == (9000, "x", "0.0.0.0")
+    assert parse(["--install-shortcut"]).install_shortcut and parse(["--uninstall-shortcut"]).uninstall_shortcut
+    with pytest.raises(SystemExit):
+        parse(["--browser", "--no-browser"])
+
+
+def test_second_start_shows_the_running_app(monkeypatch):
+    opened, posted = [], []
+    monkeypatch.setattr("webbrowser.open", opened.append)
+    assert show_running("http://127.0.0.1:1/", "window", posted.append) == "window"
+    assert posted == ["http://127.0.0.1:1/api/window/show"] and opened == []
+
+    def no_window(url):
+        raise OSError("404")
+
+    assert show_running("http://127.0.0.1:1/", "window", no_window) == "browser" and opened == ["http://127.0.0.1:1/"]
+    assert show_running("http://127.0.0.1:1/", "browser") == "browser" and len(opened) == 2
+    assert show_running("http://127.0.0.1:1/", "headless") == "nothing" and show_running("", "window") == "nothing"
+
+
+def test_window_show_endpoint_calls_the_window(env):
+    assert env.client.post("/api/window/show").status_code == 404            # --browser / --no-browser: no window
+    shown = []
+    env.app.state.show_window = lambda: shown.append(1)
+    assert env.client.post("/api/window/show").json() == {"ok": True} and shown == [1]
+
+
+def test_window_size_and_place_are_remembered(tmp_path):
+    screens = [(0, 0, 1920, 1080)]
+    assert desktop.load_geometry(tmp_path, screens) == {"width": 1320, "height": 900, "x": None, "y": None}
+    desktop.save_geometry(tmp_path, 1000, 700, 120, 80)
+    assert desktop.load_geometry(tmp_path, screens) == {"width": 1000, "height": 700, "x": 120, "y": 80}
+    desktop.save_geometry(tmp_path, 160, 28, -32000, -32000)                  # minimised: not remembered
+    assert desktop.load_geometry(tmp_path, screens)["width"] == 1000
+    desktop.save_geometry(tmp_path, 1000, 700, 4000, 80)                      # a second monitor that is gone
+    assert desktop.load_geometry(tmp_path, screens) == {"width": 1000, "height": 700, "x": None, "y": None}
+    (tmp_path / "window.json").write_text("{broken")
+    assert desktop.load_geometry(tmp_path, screens)["width"] == 1320
+
+
+def test_tray_line_says_what_the_app_does(env):
+    assert web.activity_text(env.queue.list()) == "Bezczynna"
+    job = env.submit(profile="flight")
+    assert web.activity_text(env.queue.list()) == "Zaraz zaczynam…"
+    env.queue.claim()
+    assert web.activity_text(env.queue.list()) == "lot1: Szukam scen…"
+    env.queue.report(job["id"], 2, 0.7, ["$ py -m core.cli render x", "  shot 3/9  scene"])
+    assert web.activity_text(env.queue.list()) == "lot1: Renderuję ujęcie 3 z 9"
+    env.queue.finish(job["id"], "done")
+    assert web.activity_text(env.queue.list()) == "Bezczynna"
+
+
+def test_steps_run_with_the_console_python_and_films_carry_their_path(env, monkeypatch, tmp_path):
+    (tmp_path / "python.exe").write_text("")
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "pythonw.exe"))     # the windowed app
+    assert python_exe() == str(tmp_path / "python.exe") and Runner(env.queue).python == str(tmp_path / "python.exe")
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "python.exe"))
+    assert python_exe() == str(tmp_path / "python.exe")
+    job = env.submit()
+    out = fill_output(env.lot1 / "insta-roller")
+    (out / "reel_thermal_30s.mp4").write_bytes(b"film")
+    (out / "shots_thermal_30s").mkdir()
+    (out / "shots_thermal_30s" / "01.mp4").write_bytes(b"shot")
+    assert env.client.get("/api/films").json()[0]["path"] == str(out / "reel_thermal_30s.mp4")
+    results = env.client.get(f"/api/jobs/{job['id']}/results").json()
+    assert results["films"][0]["path"] == str(out / "reel_thermal_30s.mp4") and results["shots"][0]["path"] == str(out / "shots_thermal_30s")
+
+
+def test_mark_is_drawn_as_an_icon(tmp_path):
+    pytest.importorskip("PIL")
+    from PIL import Image
+    image = desktop.mark_image(64)
+    assert image.size == (64, 64) and image.getpixel((32, 4))[:3] == desktop.ACCENT and image.getpixel((0, 0))[3] == 0
+    assert any(image.getpixel((x, 22))[:3] == (255, 255, 255) for x in range(64))      # the wings are there
+    icon = desktop.write_icon(tmp_path / "a" / "insta-roller.ico")
+    with Image.open(icon) as stored:
+        assert stored.format == "ICO" and (256, 256) in stored.info["sizes"] and (16, 16) in stored.info["sizes"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Start menu shortcuts are a Windows thing")
+def test_shortcut_is_created_in_a_given_folder_and_removed(tmp_path):
+    pytest.importorskip("PIL")
+    menu, data = tmp_path / "Start Menu z odstępem", tmp_path / "data"
+    link = desktop.install_shortcut(data, menu, arguments='-m app --data "D:\\moje dane"')
+    assert link == menu / "insta-roller.lnk" and link.exists() and (data / "insta-roller.ico").exists()
+    seen = desktop.read_shortcut(link)
+    assert Path(seen["path"]) == Path(desktop.pythonw_exe()) and seen["arguments"] == '-m app --data "D:\\moje dane"'
+    assert Path(seen["folder"]) == REPO and Path(seen["icon"]) == data / "insta-roller.ico"
+    assert desktop.uninstall_shortcut(menu) is True and not link.exists() and desktop.uninstall_shortcut(menu) is False
+
+
+def test_the_page_uses_the_window_when_it_is_in_one(env):
+    get = lambda name: env.client.get(f"/static/{name}").text                # noqa: E731
+    assert "pywebview" in get("ui.js") and "choose_folder" in get("ui.js") and "api.reveal" in get("ui.js")
+    assert "Wybierz folder…" in get("wizard.js") and "chooseFolder" in get("settings.js")
+    assert "Pokaż w Eksploratorze" in get("ui.js") and "saveButton" in get("films.js")
+    assert env.client.get("/?okno=1").status_code == 200
+
+
+def test_window_needs_webview2_and_says_why_not(monkeypatch):
+    pytest.importorskip("webview")
+    if os.name == "nt":
+        monkeypatch.setattr(desktop, "webview2_version", lambda: "")
+        assert "WebView2" in desktop.unavailable()
+        monkeypatch.setattr(desktop, "webview2_version", lambda: "157.0.1.2")
+        assert desktop.unavailable() == ""
+    names = desktop.button_names()                                           # the close question names the real buttons
+    assert len(names) == 3 and all(names) and not any("&" in n for n in names)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Start menu shortcuts are a Windows thing")
+def test_install_shortcut_command_writes_into_the_start_menu(monkeypatch, tmp_path, capsys):
+    from app.__main__ import main
+    monkeypatch.setattr(desktop, "start_menu", lambda: tmp_path / "menu")    # never the real Start menu in a test
+    main(["--install-shortcut", "--data", str(tmp_path / "data")])
+    link = tmp_path / "menu" / "insta-roller.lnk"
+    assert link.exists() and "Shortcut created" in capsys.readouterr().out
+    assert desktop.read_shortcut(link)["arguments"] == f'-m app --data "{tmp_path / "data"}"'
+    main(["--uninstall-shortcut", "--data", str(tmp_path / "data")])
+    assert not link.exists() and not (tmp_path / "data" / "app.lock").exists()   # no app was started for this

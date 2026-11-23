@@ -1,5 +1,5 @@
 // Ustawienia: the few simple ones first; the YAML files of profiles, mounts and themes under "Zaawansowane".
-import {$, h, api, guard, toast, size} from "./ui.js";
+import {$, h, api, icon, guard, toast, size, inWindow, chooseFolder} from "./ui.js";
 import {setContext, themeSwitch} from "./live.js";
 
 const QUALITY = [["auto", "Automatycznie"], ["best", "Najlepsza"], ["good", "Dobra"], ["fast", "Szybki podgląd"]];
@@ -42,7 +42,9 @@ export async function show(view) {
       h("div", {class: "cell"},
         h("h2", {class: "h3"}, "Miejsce na pliki robocze"),
         h("p", {class: "muted", style: "font-size:14px;margin-top:6px"}, "Podczas pracy powstają duże pliki tymczasowe. Najlepiej trzymać je na szybkim dysku w tym komputerze, nie na dysku sieciowym."),
-        h("div", {class: "inline mt"}, work, h("button", {class: "btn", type: "button", onclick: () => put({work: work.value.trim()}, "Zapisano folder plików roboczych")}, "Zapisz")),
+        h("div", {class: "inline mt"}, work,
+          inWindow && h("button", {class: "btn", type: "button", onclick: guard(async () => { const path = await chooseFolder(work.value.trim()); if (path) work.value = path; })}, icon("folder"), "Wybierz…"),
+          h("button", {class: "btn", type: "button", onclick: () => put({work: work.value.trim()}, "Zapisano folder plików roboczych")}, "Zapisz")),
         state.cache.free_bytes != null && h("p", {class: "muted", style: "font-size:13px;margin-top:8px"}, `Wolne miejsce: ${size(state.cache.free_bytes)}`)),
       h("div", {class: "cell"},
         h("h2", {class: "h3"}, "Domyślna jakość"),

@@ -1,5 +1,5 @@
 // Filmy: every film project, what is happening to it, and its finished films.
-import {h, api, icon, guard, toast, size, date, duration, stateText, problemText, fileUrl} from "./ui.js";
+import {h, api, icon, guard, toast, size, date, duration, stateText, problemText, fileUrl, inWindow, reveal, saveButton} from "./ui.js";
 import {live, watch, refresh, setContext} from "./live.js";
 import * as review from "./review.js";
 
@@ -45,7 +45,7 @@ function body(job, r) {
     h("video", {controls: true, preload: "metadata", playsinline: true, src: fileUrl(job.id, f.name)}),
     h("div", {}, h("div", {class: "name"}, f.title), h("div", {class: "tags", style: "margin-top:6px"},
       f.length_s && h("span", {class: "tag"}, `${f.length_s} s`), h("span", {class: "tag plain"}, size(f.size)), h("span", {class: "tag plain"}, date(f.mtime)))),
-    h("a", {class: "btn small", href: fileUrl(job.id, f.name, true)}, icon("down"), "Pobierz"));
+    saveButton(fileUrl(job.id, f.name, true), f.path));
   const wide = job.kind === "holiday" ? "films wide" : "films";
   // Films of the present plan are shown; other lengths, and everything while a new run is not finished, are "earlier".
   const fresh = job.status === "done" ? r.films.filter(f => f.current) : [];
@@ -53,7 +53,8 @@ function body(job, r) {
   return h("div", {class: "job-body"},
     now.length ? h("div", {class: wide}, now.map(film)) : null,
     old.length ? h("details", {class: "mt"}, h("summary", {}, `Wcześniejsze filmy z tego folderu (${old.length})`), h("div", {class: wide}, old.map(film))) : null,
-    r.shots.length ? h("div", {class: "inline mt2"}, r.shots.map(s =>
+    r.shots.length ? h("div", {class: "inline mt2"}, r.shots.map(s => inWindow
+      ? h("button", {class: "btn small", type: "button", onclick: () => reveal(s.path)}, icon("folder"), `Pokaż ujęcia w Eksploratorze: ${s.title}${s.length_s ? `, ${s.length_s} s` : ""}`) :
       h("a", {class: "btn small", href: `/api/jobs/${job.id}/zip/${encodeURIComponent(s.folder)}`}, icon("down"), `Pobierz ujęcia (zip): ${s.title}${s.length_s ? `, ${s.length_s} s` : ""}`))) : null,
     idle && r.scenes ? h("div", {class: "inline mt2"},
       job.status === "done" && h("a", {class: "btn", href: `#filmy/${job.id}/ujecia`}, icon("eye"), "Popraw ujęcia"),
@@ -68,6 +69,7 @@ function body(job, r) {
           h("span", {class: "muted", style: "font-size:13px"}, "Te same sceny, inna długość. Bez ponownego szukania scen.")))) : null,
     h("details", {class: "mt"}, h("summary", {}, "Szczegóły techniczne"),
       h("dl", {class: "kv", style: "margin-top:8px"}, h("dt", {}, "Filmy są w"), h("dd", {class: "mono"}, job.out)),
+      inWindow && h("button", {class: "btn small", type: "button", style: "margin-top:8px", onclick: () => reveal(job.out)}, icon("folder"), "Otwórz folder z filmami"),
       r.skipped.length ? h("p", {class: "muted", style: "font-size:13px;margin-top:8px"}, "Bez filmu: ", r.skipped.map(s => `${s.tag} (${s.reason})`).join("; ")) : null,
       r.report && h("p", {style: "margin-top:8px"}, h("a", {href: fileUrl(job.id, "scenes_report.txt"), target: "_blank"}, "Lista znalezionych scen")),
       job.error && h("pre", {}, job.error),

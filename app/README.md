@@ -1,6 +1,6 @@
 # insta-roller: the application (stage 7)
 
-One program on the Windows PC: a job queue, a job runner and a browser UI. The UI adds nothing of its own to the pipeline: every job is a list of ordinary
+One program on the Windows PC with its own window: a job queue, a job runner and an HTML UI. The UI adds nothing of its own to the pipeline: every job is a list of ordinary
 CLI steps (`python -m core.cli analyze|plan|render|shots`), run one after another as
 subprocesses, and the "Filmy" screen shows the exact commands under "Szczegóły techniczne".
 
@@ -11,24 +11,52 @@ pip install -e .[app]
 .venv\Scripts\python.exe -m app
 ```
 
-or double-click `insta-roller.bat` in the repository root (the same command), or run the
-`insta-roller-app` console script. This one process
+or double-click `insta-roller.bat` in the repository root, or run the `insta-roller-app` console
+script, or put it in the Start menu once:
 
-- serves the UI on `http://127.0.0.1:8756/` (another free port when 8756 is taken) and opens it
-  in the default browser,
+```
+.venv\Scripts\python.exe -m app --install-shortcut      (--uninstall-shortcut removes it)
+```
+
+This one process
+
+- opens the application's own window "insta-roller": the UI in WebView2 (through pywebview), served
+  by a local web server on `http://127.0.0.1:8756/` (another free port when 8756 is taken),
 - runs the queued jobs in a background thread, one at a time,
-- stops on Ctrl+C: the running step is killed together with its FFmpeg processes and its job
-  continues at that step the next time the app starts.
+- puts an icon in the system tray: "Pokaż okno", what the app is doing now, "Zakończ".
 
-Starting it a second time on the same data folder only opens the browser at the running app.
+The `.bat` and the shortcut start it with `pythonw`, so no console window stays open. What would be
+printed goes to `app.log` in the data folder; a problem at start is shown in a message box.
+
+Closing the window quits the app when nothing is running. While a film is being made it asks: keep
+working in the background (the window hides to the tray icon), stop and close (the running step is
+killed with its FFmpeg processes; the job continues at that step the next time the app starts), or
+go back. "Zakończ" in the tray stops and closes at once. Starting the app a second time on the same
+data folder brings the running window forward (also from the tray).
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--no-browser` | | do not open the browser |
+| `--browser` | | no window: open the UI in the default browser; Ctrl+C in the console stops the app |
+| `--no-browser` | | no window and no browser: only the server and the runner (tests, smoke runs) |
 | `--port` | `8756` | port of the UI |
 | `--host` | `127.0.0.1` | address to listen on. Anything else (e.g. `0.0.0.0`, to use the UI from a phone) lets every device that can reach the port queue jobs, edit profiles and download films: **there is no login** |
-| `--data` | `%LOCALAPPDATA%\insta-roller` | the app's own folder: `queue.db` (SQLite) and `settings.json` |
+| `--data` | `%LOCALAPPDATA%\insta-roller` | the app's own folder: `queue.db`, `settings.json`, `window.json` (size and place of the window), `app.log`, the WebView2 profile |
+| `--install-shortcut` / `--uninstall-shortcut` | | "insta-roller" in the user's Start menu: `pythonw -m app`, started in the repository, with the icon written to the data folder |
 
+The window needs the Microsoft Edge WebView2 runtime (part of Windows 11). Without it, or without
+pywebview, the app says so and opens the browser instead.
+
+### What the window adds to the page
+
+The page is the same in the window and in a browser; in the window (`?okno=1`, `window.pywebview`)
+it uses two functions of `app/desktop.py`:
+
+- `choose_folder`: the system's folder dialog. "Wybierz folder…" in step 1 of "Nowy film", "Wybierz
+  inny folder…" for the output folder, "Wybierz…" for the cache folder. The in-page folder list and
+  the path field stay; in a browser they are the only way.
+- `reveal`: "Pokaż w Eksploratorze" opens Explorer with the film selected (or the folder of shots
+  opened). In the window it replaces "Pobierz": the film is already on this disk, and downloads
+  inside WebView2 are off by default in pywebview. In a browser "Pobierz" stays, for the phone.
 ## Folders
 
 - **Job folder**: any folder on the machine. The picker on "Nowy film" starts at the drives,
@@ -112,7 +140,8 @@ value is set. The names to export are remembered in `settings.json`; the first t
 
 | File | What |
 |---|---|
-| `__main__.py` | the command: port, single instance, browser, start and stop |
+| `__main__.py` | the command: options, port, single instance, log, start and stop |
+| `desktop.py` | the window (pywebview), tray icon (pystray), folder dialog, Explorer, close question, Start menu shortcut |
 | `web.py` | FastAPI: the API behind the UI, and the UI files in `static/` |
 | `people.py` | the "Osoby" API: `people.json`, the Immich settings, the export as a background action |
 | `db.py` | the queue in SQLite |

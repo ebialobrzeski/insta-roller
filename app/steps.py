@@ -5,10 +5,20 @@ Everything a job does is one of these commands, so it can be repeated by hand.
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 
 OUT_DIR = "insta-roller"                # the CLI's default output folder inside the job folder
 JOB_PROFILE = "job_profile.yaml"        # a job's own settings (profile "inne"), kept in the output folder
 MODULES = {"thumbnails": ["app.thumbs"]}        # every other step is `core.cli <step>`
+
+
+def python_exe() -> str:
+    """The interpreter for the steps. The windowed app runs under pythonw, which has no output to read:
+    the steps use the python.exe next to it."""
+    here = Path(sys.executable)
+    console = here.with_name("python.exe")
+    return str(console) if here.name.lower() == "pythonw.exe" and console.exists() else str(here)
 
 
 def pipeline(options: dict) -> tuple[list[str], str]:

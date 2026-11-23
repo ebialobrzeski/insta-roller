@@ -1,5 +1,5 @@
 // insta-roller UI: plain ES modules, no build step. This file is the shell: sidebar, routing, the status row.
-import {$, h, icon, mark, store, toast, stateText} from "./ui.js";
+import {$, h, icon, mark, store, toast, stateText, inWindow} from "./ui.js";
 import {live, watch, refresh, themeSwitch} from "./live.js";
 import * as home from "./home.js";
 import * as wizard from "./wizard.js";
@@ -46,7 +46,7 @@ watch(jobs => {
   const [href, glyph, head, text] =
     review ? [`#filmy/${review.id}/ujecia`, "eye", "Ujęcia czekają", `Przejrzyj je i uruchom render: ${review.name}`]
     : failed ? [`#filmy/${failed.id}`, "alert", "Film się nie udał", `Zobacz, co poszło nie tak: ${failed.name}`]
-    : jobs.length ? ["#nowy", "info", "Działa w tle", "Możesz zamknąć kartę. Film znajdziesz w „Filmy”."]
+    : jobs.length ? ["#nowy", "info", "Działa w tle", inWindow ? "Film powstaje dalej, gdy schowasz okno do ikony przy zegarze." : "Możesz zamknąć kartę. Film znajdziesz w „Filmy”."]
     : ["#nowy", "film", "Zacznij tutaj", "Wskaż folder z nagraniami, a powstanie pierwszy film."];
   const notice = $("#notice"), key = href + head + text;
   if (notice.dataset.key !== key) {              // only when it changes: no flicker while polling

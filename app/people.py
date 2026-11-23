@@ -21,6 +21,8 @@ import yaml
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from .steps import python_exe
+
 ADDRESSES = ("IMMICH_TAILSCALE_ADDRESS", "IMMICH_ADDRESS")      # tried in this order
 KEY = "IMMICH_API_KEY"
 LOG_LINES = 40
@@ -106,7 +108,7 @@ def add_routes(app: FastAPI, people_file: Path, env_file: Path, profiles: Path, 
         try:
             urls = [with_scheme(conf[name]) for name in ADDRESSES if conf[name]]
             url = next((u for u in urls[:-1] if reachable(u)), urls[-1])        # the last one is not asked first
-            cmd = [sys.executable, "-u", "-m", "core.cli", "faces-export", "--people", ",".join(names),
+            cmd = [python_exe(), "-u", "-m", "core.cli", "faces-export", "--people", ",".join(names),
                    "--out", str(people_file), "--immich-url", url, "--api-key-env", KEY]
             say("$ " + subprocess.list2cmdline(cmd))
             code = runner(cmd, say, lambda: False, {KEY: conf[KEY]})

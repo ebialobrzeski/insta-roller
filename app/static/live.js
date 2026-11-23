@@ -1,5 +1,5 @@
 // What every screen shares: the job list (polled once, for all), the theme, the top bar's context, the player.
-import {$, h, api, icon, store} from "./ui.js";
+import {$, h, api, icon, store, saveButton} from "./ui.js";
 
 export const live = {jobs: []};
 const watchers = new Set();
@@ -50,7 +50,7 @@ export function play(film) {
     h("div", {class: "spread", style: "margin-bottom:12px;gap:16px"},
       h("div", {style: "min-width:0"}, h("div", {class: "h3"}, film.title), h("div", {class: "mono muted"}, film.name)),
       h("div", {class: "inline"},
-        h("a", {class: "btn small", href: `${film.url}?download=1`}, icon("down"), "Pobierz"),
+        saveButton(`${film.url}?download=1`, film.path),
         h("button", {class: "btn small", type: "button", "aria-label": "Zamknij", onclick: () => dialog.close()}, icon("x")))),
     video);
   dialog.addEventListener("close", () => { video.pause(); dialog.remove(); });

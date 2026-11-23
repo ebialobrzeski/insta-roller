@@ -48,6 +48,29 @@ export const store = {
   set(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch (error) { /* a convenience only */ } },
 };
 
+// --- the application window (app/desktop.py): system dialogs instead of the browser's ways ------------
+// The window opens the page with ?okno=1; in an ordinary browser none of this is offered.
+export const inWindow = new URLSearchParams(location.search).has("okno");
+async function native() {                        // window.pywebview.api appears a moment after the page
+  if (!inWindow) return null;
+  if (!(window.pywebview && window.pywebview.api)) {
+    await new Promise(done => { window.addEventListener("pywebviewready", done, {once: true}); setTimeout(done, 4000); });
+  }
+  return (window.pywebview && window.pywebview.api) || null;
+}
+export async function chooseFolder(start) {      // the system's folder dialog; "" when cancelled
+  const api = await native();
+  return api ? (await api.choose_folder(start || "")) || "" : "";
+}
+export const reveal = guard(async path => {
+  const api = await native();
+  if (!api || !(await api.reveal(path))) toast("Nie znalazłem tego pliku na dysku", true);
+});
+// A finished file: in the window it is already on this disk, so it is shown in Explorer; in a browser it is downloaded.
+export const saveButton = (url, path, cls = "btn small", text = true) => inWindow
+  ? h("button", {class: cls, type: "button", title: "Pokaż w Eksploratorze", "aria-label": "Pokaż w Eksploratorze", onclick: () => reveal(path)}, icon("folder"), text && "Pokaż w Eksploratorze")
+  : h("a", {class: cls, href: url, title: "Pobierz", "aria-label": "Pobierz"}, icon("down"), text && "Pobierz");
+
 // --- icons: thin line drawings, 24 px box -------------------------------------------
 const ICONS = {
   home: "M4 10.5 12 4l8 6.5V20h-5v-6H9v6H4z",

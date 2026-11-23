@@ -12,7 +12,7 @@ design is in `Insta360 X5 – automatyczne kadrowanie i montaż (moduł 1).md`.
 | 4 | Media SDK stitcher (`stitcher/`) | done: built with VS 2022 Build Tools, used for rendering by default; slow (about 15 s per second of 5.7K footage) |
 | 5 | Holiday profile | done from sensors and sound; see limits below |
 | 6 | People from Immich (`core/faces.py`) | done: exported from a real Immich 3.4.2 and recognised on real clips; people are sampled three times per scene, not tracked frame by frame |
-| 7 | Standalone Windows app: queue, job runner, browser UI (`app/`) | done; one real job run end to end on this PC; network-drive and UNC job folders untried |
+| 7 | Standalone Windows app with its own window: queue, job runner, UI (`app/`) | done; real jobs run end to end on this PC; network-drive and UNC job folders, and the folder dialog by hand, untried |
 
 `docs/sample-run.md` records runs on real footage.
 
@@ -182,8 +182,10 @@ are made as before.
   size-limited cache (`--cache-gb`); `tools/bench_stitch.py` measures time and
   GPU memory into `docs/stitch-benchmark.md`.
 - `app/README.md`: the application, one process on the Windows PC started with
-  `python -m app` or `insta-roller.bat`: job queue, job runner and the browser
-  UI (new job, queue, results, settings, scene review).
+  `python -m app`, `insta-roller.bat` or a Start menu shortcut: its own window
+  (WebView2), tray icon, job queue, job runner and the UI (overview, new film,
+  films with the scene review, people, settings). `--browser` shows the same UI
+  in a browser.
 
 ## Data contracts
 

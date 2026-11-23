@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 from .db import Queue
-from .steps import cli_args, job_work, out_dir
+from .steps import cli_args, job_work, out_dir, python_exe
 
 REPO = Path(__file__).resolve().parent.parent
 SHOT = re.compile(r"shot (\d+)/(\d+)")
@@ -60,7 +60,8 @@ def _tie_to_app(proc: subprocess.Popen) -> None:
 def kill_tree(proc: subprocess.Popen) -> None:
     """Stop a step together with the FFmpeg processes it started."""
     if os.name == "nt":
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
     else:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
@@ -75,7 +76,9 @@ def run_subprocess(cmd: list[str], on_line, poll, env: dict | None = None) -> in
     `env` adds variables for the step: secrets go there, never on the command line."""
     env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1", **(env or {}))
     # Its own process group: Ctrl+C in the app's console does not reach the step; the app stops it.
-    own = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
+    # No console window of its own either: the windowed app has none to share.
+    own = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW} if os.name == "nt"
+           else {"start_new_session": True})
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                             cwd=REPO, env=env, text=True, encoding="utf-8", errors="replace", **own)
     if os.name == "nt":
@@ -110,9 +113,9 @@ class Runner:
     """Runs the queue, one job at a time. `work` returns the cache folder from the settings."""
 
     def __init__(self, jobs: Queue, runner=run_subprocess, work=lambda: "", interval_s: float = 1.0,
-                 python: str = sys.executable):
+                 python: str | None = None):
         self.jobs, self.runner, self.work = jobs, runner, work
-        self.interval_s, self.python = interval_s, python
+        self.interval_s, self.python = interval_s, python or python_exe()
         self.closing = threading.Event()
         self.thread: threading.Thread | None = None
 

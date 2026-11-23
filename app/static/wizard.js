@@ -1,5 +1,5 @@
 // Nowy film: three steps. 1 Nagrania, 2 Co ma powstać, 3 Jakość i start.
-import {$, h, api, icon, guard, toast, store, duration, plural, THEMES} from "./ui.js";
+import {$, h, api, icon, guard, toast, store, duration, plural, THEMES, inWindow, chooseFolder} from "./ui.js";
 import {setContext} from "./live.js";
 
 const CUSTOM = "__custom__";
@@ -100,6 +100,10 @@ function stepFolder() {
     h("div", {class: "row wide"},
       h("div", {class: "cell flush"},
         h("div", {style: "padding:20px 32px 12px"},
+          inWindow && h("div", {class: "inline", style: "margin-bottom:14px"},
+            h("button", {class: "btn primary", type: "button", onclick: guard(async () => { const path = await chooseFolder(l.path); if (path) browse(path); })},
+              icon("folder"), "Wybierz folder…"),
+            h("span", {class: "muted", style: "font-size:13px"}, "albo wklej ścieżkę lub wskaż folder poniżej")),
           h("div", {class: "inline"},
             h("input", {id: "f-path", class: "mono", type: "text", value: l.path, autocomplete: "off", spellcheck: "false", "aria-label": "Ścieżka folderu",
                         placeholder: "Wklej ścieżkę, np. D:\\Wideo\\lot albo \\\\nas\\wideo\\lot", onkeydown: e => { if (e.key === "Enter") go(); }}),
@@ -242,6 +246,10 @@ function stepStart() {
     h("div", {class: "row"}, h("div", {class: "cell"},
       h("label", {class: "field"}, "Gdzie zapisać filmy",
         h("input", {class: "mono", type: "text", value: w.out, autocomplete: "off", spellcheck: "false", placeholder: w.found ? w.found.out : "", oninput: e => { w.out = e.target.value; }})),
+      inWindow && h("button", {class: "btn small", type: "button", style: "margin-top:8px", onclick: guard(async () => {
+        const path = await chooseFolder(w.out || w.listing.path);
+        if (path) { w.out = path; draw(); }
+      })}, icon("folder"), "Wybierz inny folder…"),
       h("p", {class: "muted", style: "font-size:13px;margin-top:8px"}, "Puste pole oznacza folder pokazany wyżej: podfolder obok nagrań. Możesz wpisać inny, na przykład na szybszym dysku."))),
     h("div", {class: "row"}, h("div", {class: "cell"}, h("div", {class: "spread"},
       h("div", {style: "flex:1 1 320px;min-width:0"}, h("div", {class: "h3"}, w.listing.path.split(/[\\/]/).filter(Boolean).pop() || w.listing.path), h("p", {class: "sub", id: "w-summary"}, summary())),

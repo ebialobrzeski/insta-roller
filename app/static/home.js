@@ -1,5 +1,5 @@
 // Przegląd: what to do, the current film as a picture, the state of the PC, the finished films.
-import {h, api, icon, size, date, duration, plural, shotName, stateText, fileUrl, clock} from "./ui.js";
+import {h, api, icon, size, date, duration, plural, shotName, stateText, fileUrl, clock, saveButton} from "./ui.js";
 import {live, watch, setContext, play} from "./live.js";
 
 const STARTS = [
@@ -98,7 +98,7 @@ function latest(films) {
     h("ul", {class: "list"}, films.slice(0, 4).map(f => h("li", {},
       h("button", {class: "round", type: "button", "aria-label": `Odtwórz: ${f.title}`, onclick: () => play(filmOf(f))}, icon("play")),
       h("div", {class: "grow"}, h("div", {class: "name"}, f.title), h("div", {class: "mono muted name"}, `${f.job_name} · ${f.length_s ? `${f.length_s} s` : ""}`)),
-      h("a", {class: "btn small quiet", href: fileUrl(f.job, f.name, true), "aria-label": `Pobierz: ${f.title}`, title: "Pobierz"}, icon("down"))))));
+      saveButton(fileUrl(f.job, f.name, true), f.path, "btn small quiet", false)))));
 }
 
 function grid(films) {

@@ -217,6 +217,19 @@ def thin(samples: list[dict], limit: int = POINTS) -> list[dict]:
     return kept
 
 
+def activity_text(jobs: list[dict]) -> str:
+    """What the app is doing now, in words: the tray icon's line (the page has its own, in ui.js)."""
+    job = next((j for j in jobs if j["status"] == "running"), None)
+    if job is None:
+        return "Zaraz zaczynam…" if any(j["status"] == "queued" for j in jobs) else "Bezczynna"
+    stage = job["steps"][job["step_index"]] if job["step_index"] < len(job["steps"]) else ""
+    shot = SHOT.findall(job["log"].rpartition("$ ")[2])[-1:]
+    of = f" {shot[0][0]} z {shot[0][1]}" if shot else ""
+    words = {"analyze": "Szukam scen…", "plan": "Układam plan…", "thumbnails": f"Robię miniatury{of or '…'}",
+             "render": f"Renderuję ujęcie{of}" if of else "Renderuję…", "shots": f"Zapisuję ujęcie{of}" if of else "Zapisuję ujęcia…"}
+    return f"{Path(job['folder']).name}: {words.get(stage, 'Pracuję…')}"
+
+
 def day_text(day: str) -> str:
     """20250812 -> 12.08.2025"""
     return f"{day[6:8]}.{day[4:6]}.{day[:4]}" if len(day) == 8 and day.isdigit() else day
@@ -551,7 +564,7 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
         films = []
         for p in out.glob("reel_*.mp4"):
             stat, tag = p.stat(), p.stem[5:]
-            films.append({"name": p.name, "size": stat.st_size, "mtime": stat.st_mtime, **named(tag),
+            films.append({"name": p.name, "path": str(p), "size": stat.st_size, "mtime": stat.st_mtime, **named(tag),
                           "current": tag in planned})    # False: an earlier version, of another length
         return sorted(films, key=lambda f: -f["mtime"]), named
 
@@ -597,6 +610,15 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
                 "points": [[s["t"], s["alt_m"]] for s in thin(samples)],
                 "shots": [{k: s[k] for k in ("reel", "type", "start_s", "duration_s")} for s in shots]}
 
+    @app.post("/api/window/show")
+    def window_show():
+        """A second start of the app asks the running one to bring its window to the front."""
+        show = getattr(app.state, "show_window", None)
+        if show is None:
+            raise HTTPException(404, "Aplikacja działa bez okna")
+        show()
+        return {"ok": True}
+
     @app.get("/api/status")
     def status():
         """The overview's "Stan" cell: what this PC has to make films with."""
@@ -620,7 +642,7 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
             return {"name": p.name, "size": stat.st_size, "mtime": stat.st_mtime}
 
         films, named = films_in(out)
-        shots = [{"folder": d.name, **named(d.name[6:]), "files": [info(f) for f in sorted(d.glob("*.mp4"))]}
+        shots = [{"folder": d.name, "path": str(d), **named(d.name[6:]), "files": [info(f) for f in sorted(d.glob("*.mp4"))]}
                  for d in sorted(out.glob("shots_*")) if d.is_dir()]
         reels = (read_json(out / "reels.json") or {}).get("reels", [])
         return {"films": films, "shots": [s for s in shots if s["files"]],
