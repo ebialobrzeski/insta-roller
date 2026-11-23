@@ -154,3 +154,11 @@ stitch with direction lock at 3840 x 1920.
 - Seen on contact sheets: level and stable; known people are found, but the
   frame often cuts the top of a head because only the direction of a face is
   used, not its height, and the holder dominates the films.
+
+After the framing changes (face height, at most two holder shots, turn speed
+limits) the cruise was planned and rendered again: 16 companion scenes
+instead of 58, the rest of the holder-only scenes shown as the view ahead.
+Re-render of the eight films: about 55 min, most view shots came from the
+cache. On contact sheets of 2 and 10 August heads are inside the frame and
+the films show mostly places; in some shots of another person the holder's
+head still sits at the frame edge.
