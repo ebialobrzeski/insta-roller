@@ -104,7 +104,8 @@ def step_analyze(job: Job) -> Scenes:
     rec, igc, profile = job.recording, job.igc, job.profile
     fp = fingerprint(igc, *rec.files, profile.detection.model_dump_json(),
                      {k: v.base_score for k, v in profile.scene_types.items()},
-                     profile.thermal_good_climb_ms, job.args.offset, job.args.video_start)
+                     profile.thermal_good_climb_ms, profile.thermal_low_agl_m, profile.thermal_low_bonus,
+                     job.args.offset, job.args.video_start)
     path = job.path("scenes.json")
     if path.exists() and not job.args.force:
         cached = contracts.read(path, Scenes)

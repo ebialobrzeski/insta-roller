@@ -62,6 +62,8 @@ class Profile(Strict):
     encoder: str
     transition_s: float
     thermal_good_climb_ms: float
+    thermal_low_agl_m: float
+    thermal_low_bonus: float
     detection: Detection
     scene_types: dict[str, SceneType]
 

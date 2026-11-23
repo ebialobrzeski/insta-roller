@@ -12,5 +12,8 @@ presets:
   front:      {yaw: 0,    pitch: 0,  fov: 120}
   pilot:      {yaw: 180,  pitch: 0,  fov: 90}
   pilot_wide: {yaw: 180,  pitch: 5,  fov: 140}
-  back_left:  {yaw: -130, pitch: -5, fov: 125}
-  back_right: {yaw: 130,  pitch: -5, fov: 125}
+  back_left:  {yaw: -120, pitch: 5,  fov: 125}
+  back_right: {yaw: 120,  pitch: 5,  fov: 125}
+  # Along the wing and down at the ground, pilot out of frame.
+  wing_left:  {yaw: -100, pitch: 8,  fov: 115}
+  wing_right: {yaw: 100,  pitch: 8,  fov: 115}

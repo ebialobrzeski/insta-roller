@@ -8,12 +8,15 @@ MIN_SHOT_S = 2.0
 
 
 def resolve_framing(names: list[str], scene: Scene, mount: Mount) -> list[str]:
-    """back_inner / back_outer follow the circling direction of the scene."""
+    """*_inner / *_outer follow the circling direction: back_inner -> back_left."""
     direction = scene.attrs.get("direction", "left")
     other = "right" if direction == "left" else "left"
     out = []
     for name in names:
-        name = {"back_inner": f"back_{direction}", "back_outer": f"back_{other}"}.get(name, name)
+        if name.endswith("_inner"):
+            name = f"{name[:-6]}_{direction}"
+        elif name.endswith("_outer"):
+            name = f"{name[:-6]}_{other}"
         if name not in mount.presets:
             raise KeyError(f"preset '{name}' is not defined in mount '{mount.name}'")
         out.append(name)
@@ -21,7 +24,7 @@ def resolve_framing(names: list[str], scene: Scene, mount: Mount) -> list[str]:
 
 
 def _window(scene: Scene, length: float, anchor: str) -> float:
-    if anchor == "start":
+    if anchor == "start" or scene.attrs.get("low"):     # low thermal: lowest at entry
         return scene.start_s
     if anchor == "end":
         return scene.end_s - length
@@ -78,6 +81,8 @@ def plan_reel(scenes: list[Scene], profile: Profile, theme: Theme, mount: Mount,
         start = _window(s, length, types[s.type].anchor)
         if ending and s.id == ending[0].id:
             start = min(start, ending[1] - length)
+        if shots:       # neighbouring scenes can touch; never show the same footage twice
+            start = min(max(start, shots[-1].start_s + shots[-1].duration_s), s.end_s - length)
         shots.append(Shot(index=0, scene_id=s.id, type=s.type, start_s=round(max(start, s.start_s), 2),
                           duration_s=length, framing=resolve_framing(types[s.type].framing, s, mount)))
     if ending:

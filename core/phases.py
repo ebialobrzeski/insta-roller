@@ -126,6 +126,7 @@ def detect_phases(fixes: list[Fix], p: Detection) -> list[Phase]:
     while roll > 0 and tr.speed[roll - 1] > 2.0:
         roll -= 1
     airborne_from_start = roll == 0 and tr.speed[0] > p.takeoff_speed_ms
+    ground_ref = min(tr.alt) if airborne_from_start else tr.alt[roll]
 
     last_fast = _last_sustained(tr.speed, p.landing_speed_ms, p.speed_hold_s)
     landed = last_fast is not None and last_fast < n - p.speed_hold_s
@@ -188,6 +189,7 @@ def detect_phases(fixes: list[Fix], p: Detection) -> list[Phase]:
                 "turns": round(abs(turned) / 360, 1),
                 "climb_ms": round((tr.alt[b] - tr.alt[a]) / (b - a), 2),
                 "alt_gain_m": round(tr.alt[b] - tr.alt[a]),
+                "agl_m": round(tr.alt[a] - ground_ref),     # height above the airfield at entry
             }))
 
     # Glides: what is left between the release, thermals and the circuit.

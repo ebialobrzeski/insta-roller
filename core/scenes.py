@@ -13,7 +13,16 @@ def score(phase: Phase, profile: Profile) -> float:
     if phase.type == "thermal":
         climb = max(phase.attrs.get("climb_ms", 0.0), 0.0)
         base += (1.0 - base) * min(climb / profile.thermal_good_climb_ms, 1.0)
-    return round(base, 3)
+        base += profile.thermal_low_bonus * low_factor(phase.attrs, profile)
+    return round(min(base, 1.0), 3)
+
+
+def low_factor(attrs: dict, profile: Profile) -> float:
+    """1 at ground level, 0 at or above the low-thermal limit."""
+    agl = attrs.get("agl_m")
+    if agl is None:
+        return 0.0
+    return min(max(1.0 - agl / profile.thermal_low_agl_m, 0.0), 1.0)
 
 
 def build_scenes(phases: list[Phase], video_start_utc: float, duration_s: float,
@@ -31,6 +40,8 @@ def build_scenes(phases: list[Phase], video_start_utc: float, duration_s: float,
                 missing.append(ph.type)
             continue
         attrs = dict(ph.attrs)
+        if ph.type == "thermal" and low_factor(attrs, profile) > 0:
+            attrs["low"] = True
         if end - start < (ph.end - ph.start) - 1.0:
             attrs["truncated"] = True
         scenes.append(Scene(id=f"{i:03d}_{ph.type}", type=ph.type, start_s=round(start, 2),

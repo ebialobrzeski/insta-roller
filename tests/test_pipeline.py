@@ -113,7 +113,19 @@ def test_inner_wing_follows_the_circling_direction(flight, profile, theme, mount
     thermals = [s for s in reel.shots if s.type == "thermal"]
     assert len(thermals) == 2
     for shot in thermals:
-        assert shot.framing[0] == f"back_{by_id[shot.scene_id].attrs['direction']}"
+        side = by_id[shot.scene_id].attrs["direction"]
+        assert shot.framing == [f"wing_{side}", f"back_{side}"]     # wing and ground, no pilot shot
+
+
+def test_low_thermal_scores_higher_and_is_cut_from_its_start(flight, profile, theme, mount):
+    scenes, _, reel = _plan(flight, profile, theme, mount, 60)
+    low, high = [s for s in scenes if s.type == "thermal"]
+    assert low.attrs["agl_m"] == pytest.approx(690, abs=30) and low.attrs.get("low")
+    assert high.attrs["agl_m"] > profile.thermal_low_agl_m and "low" not in high.attrs
+    plain = profile.scene_types["thermal"].base_score + 0.6 * low.attrs["climb_ms"] / profile.thermal_good_climb_ms
+    assert low.score > plain
+    shot = next(s for s in reel.shots if s.scene_id == low.id)
+    assert shot.start_s == pytest.approx(low.start_s, abs=0.01)
 
 
 def test_recording_that_ends_early_reports_missing_phases(flight, profile, theme, mount):
@@ -127,7 +139,9 @@ def test_framing_takes_the_short_way_round(mount):
     frames = frame_shot(["back_left", "pilot_wide"], 8.0, mount, 1.5)
     assert [f.t for f in frames] == sorted(f.t for f in frames)
     assert frames[0].t == 0 and frames[-1].t == 8.0
-    assert frames[0].yaw == -130 and frames[-1].yaw == -180   # 50 degrees, not 310
+    start = mount.presets["back_left"].yaw
+    assert frames[0].yaw == start and frames[-1].yaw == -180  # the short way, not through the nose
+    assert abs(frames[-1].yaw - start) < 180
     script = sendcmd_script(frames)
     assert "[expr] v360@flat yaw" in script and "TI*TI*(3-2*TI)" in script
 
