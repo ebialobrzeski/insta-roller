@@ -1,0 +1,16 @@
+# Mount "szybowiec, tablica przyrządów": camera on the panel in front of the pilot.
+# Angles are in the aircraft frame: yaw 0 = nose, +90 = right wing, 180 = pilot.
+# fov is the diagonal field of view of the output frame.
+name: glider_panel
+
+# Rotation that turns each source into the aircraft frame.
+calibration:
+  dual_fisheye: {lens_fov: 200, yaw: 0, pitch: -40, roll: 0}   # raw LRV proxy
+  equirect: {yaw: 0, pitch: 0, roll: 0}                      # Insta360 Studio export
+
+presets:
+  front:      {yaw: 0,    pitch: 0,  fov: 120}
+  pilot:      {yaw: 180,  pitch: 0,  fov: 90}
+  pilot_wide: {yaw: 180,  pitch: 5,  fov: 140}
+  back_left:  {yaw: -130, pitch: -5, fov: 125}
+  back_right: {yaw: 130,  pitch: -5, fov: 125}

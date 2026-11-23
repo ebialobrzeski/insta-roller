@@ -1,0 +1,5 @@
+# Theme "skrót lotu": chronological highlights. Landing scenes are off by default.
+name: flight_summary
+include: [takeoff, tow, release, thermal, glide]
+max_per_type: {tow: 1, thermal: 3, glide: 2}
+ending: {preset: pilot_wide, duration_s: 4}

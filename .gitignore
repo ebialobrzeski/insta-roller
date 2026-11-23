@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# SDK archives and extracted SDKs are licensed material, never commit
+*.zip
+sdk/
+
+# Footage and job output
+work/
+*.insv
+*.lrv
+*.mp4
+!tests/data/*.mp4
