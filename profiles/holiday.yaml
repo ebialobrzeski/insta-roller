@@ -2,7 +2,7 @@
 name: holiday
 kind: holiday
 output: {width: 1920, height: 1080, fps: 30}
-target_length_s: 60          # one day
+target_length_s: 120         # one day; a day with less usable footage gives a shorter film
 audio: true                  # original sound; sped-up parts are silent
 audio_fade_s: 0.25           # fade at every cut
 mount: selfie_stick
@@ -27,11 +27,11 @@ holiday:
   long_walk_s: 20            # walking longer than this is shown sped up
   speech_db: 8               # sound this far above the clip's quiet level = speech
   min_per_day_s: 20          # trip film: every day gets at least this much
-  trip_length_s: 180
+  trip_length_s: 360
 
 scene_types:
-  view:      {weight: 1.0, base_score: 0.6, min_shot_s: 4, max_shot_s: 8,  anchor: center, framing: [view]}
+  view:      {weight: 1.0, base_score: 0.6, min_shot_s: 4, max_shot_s: 12, anchor: center, framing: [view]}
   walk:      {weight: 0.6, base_score: 0.4, min_shot_s: 3, max_shot_s: 6,  anchor: center, framing: [view], speed: 4}
-  holder:    {weight: 1.0, base_score: 0.7, min_shot_s: 4, max_shot_s: 10, anchor: center, framing: [holder]}
-  companion: {weight: 1.0, base_score: 0.8, min_shot_s: 4, max_shot_s: 10, anchor: center, framing: [companion]}
-  panorama:  {weight: 0.9, base_score: 0.7, min_shot_s: 6, max_shot_s: 12, anchor: center, framing: [panorama]}
+  holder:    {weight: 1.0, base_score: 0.7, min_shot_s: 4, max_shot_s: 12, anchor: center, framing: [holder]}
+  companion: {weight: 1.0, base_score: 0.8, min_shot_s: 4, max_shot_s: 14, anchor: center, framing: [companion]}
+  panorama:  {weight: 0.9, base_score: 0.7, min_shot_s: 6, max_shot_s: 16, anchor: center, framing: [panorama]}
