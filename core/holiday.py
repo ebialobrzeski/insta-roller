@@ -161,6 +161,14 @@ def plan(job, scenes: Scenes) -> tuple[list[ReelPlan], list[ReelEntry]]:
     by_day: dict[str, list[Scene]] = {}
     for s in scenes.scenes:
         by_day.setdefault(s.attrs.get("day", "unknown"), []).append(s)
+    # A film takes few shots of the person holding the camera. The other scenes
+    # that found only the holder are shown as the view ahead instead of dropped.
+    limit = theme.max_per_type.get("holder")
+    if limit is not None and "view" in profile.scene_types:
+        for day, items in by_day.items():
+            keep = {s.id for s in sorted((s for s in items if s.type == "holder"), key=lambda s: -s.score)[:limit]}
+            by_day[day] = [s.model_copy(update={"type": "view", "score": profile.scene_types["view"].base_score})
+                           if s.type == "holder" and s.id not in keep else s for s in items]
     plans, entries = [], []
     none = frozenset()
 
