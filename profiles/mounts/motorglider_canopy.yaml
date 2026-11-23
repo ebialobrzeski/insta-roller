@@ -1,0 +1,27 @@
+# Mount "motoszybowiec, owiewka": camera on the canopy, roughly in the middle,
+# seats side by side. Angles are first guesses: check them with
+# `insta-roller preview <folder> --profile flight_motor` on a real recording.
+# yaw 0 = nose, +90 = right wing, 180 = back towards the crew.
+name: motorglider_canopy
+
+calibration:
+  dual_fisheye: {lens_fov: 200, yaw: 0, pitch: 0, roll: 0}
+  equirect: {yaw: 0, pitch: 0, roll: 0}
+
+# The second person: `pilot_wide: crew` shows both seats; point it at
+# left_seat (or right_seat) to keep the other person out of the reels.
+aliases:
+  pilot: left_seat
+  pilot_wide: crew
+
+presets:
+  front:       {yaw: 0,    pitch: 5,   fov: 115}
+  front_level: {yaw: 0,    pitch: 5,   fov: 115, horizon: locked}
+  instruments: {yaw: 0,    pitch: -45, fov: 90,  exposure_ev: 0.2}
+  left_seat:   {yaw: 155,  pitch: -15, fov: 95,  exposure_ev: 0.2}
+  right_seat:  {yaw: -155, pitch: -15, fov: 95,  exposure_ev: 0.2}
+  crew:        {yaw: 180,  pitch: -10, fov: 140, exposure_ev: 0.15}
+  back_left:   {yaw: -120, pitch: 5,   fov: 125}
+  back_right:  {yaw: 120,  pitch: 5,   fov: 125}
+  wing_left:   {yaw: -100, pitch: 8,   fov: 115}
+  wing_right:  {yaw: 100,  pitch: 8,   fov: 115}

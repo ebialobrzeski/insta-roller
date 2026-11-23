@@ -7,11 +7,17 @@ name: glider_panel
 calibration:
   dual_fisheye: {lens_fov: 200, yaw: 0, pitch: -40, roll: 0}   # raw LRV proxy
   equirect: {yaw: 0, pitch: 0, roll: 0}                      # Insta360 Studio export
+  # Media SDK stitch, no stabilisation: the picture stays tied to the glider.
+  sdk: {yaw: 0, pitch: -40, roll: 0, stabilize: none}
 
+# horizon: aircraft = the picture banks with the glider (cabin in view);
+#          locked = the horizon stays level (clean outside views).
+# exposure_ev: brightness correction for the preset (cabin vs outside).
 presets:
-  front:      {yaw: 0,    pitch: 0,  fov: 120}
-  pilot:      {yaw: 180,  pitch: 0,  fov: 90}
-  pilot_wide: {yaw: 180,  pitch: 5,  fov: 140}
+  front:       {yaw: 0,    pitch: 0,  fov: 120}
+  front_level: {yaw: 0,    pitch: 0,  fov: 120, horizon: locked}
+  pilot:       {yaw: 180,  pitch: 0,  fov: 90,  exposure_ev: 0.25}
+  pilot_wide:  {yaw: 180,  pitch: 5,  fov: 140, exposure_ev: 0.15}
   back_left:  {yaw: -120, pitch: 5,  fov: 125}
   back_right: {yaw: 120,  pitch: 5,  fov: 125}
   # Along the wing and down at the ground, pilot out of frame.

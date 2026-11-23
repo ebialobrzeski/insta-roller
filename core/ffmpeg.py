@@ -25,13 +25,18 @@ def ffmpeg_exe() -> str:
             "`pip install imageio-ffmpeg`.") from None
 
 
-def run(args: list[str], log: Path | None = None, cwd: Path | None = None) -> subprocess.CompletedProcess:
-    cmd = [ffmpeg_exe(), "-hide_banner", "-nostdin", "-y", *args]
+def run(args: list[str], log: Path | None = None, cwd: Path | None = None,
+        stdin: bytes | None = None) -> subprocess.CompletedProcess:
+    """stdin: bytes for an input read from pipe:0 (raw overlay frames)."""
+    cmd = [ffmpeg_exe(), "-hide_banner", *([] if stdin else ["-nostdin"]), "-y", *args]
     if log:
         log.parent.mkdir(parents=True, exist_ok=True)
         with open(log, "a", encoding="utf-8") as f:
             f.write(f"[{datetime.now().isoformat(timespec='seconds')}] {subprocess.list2cmdline(cmd)}\n")
-    res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=cwd)
+    res = subprocess.run(cmd, capture_output=True, cwd=cwd, input=stdin,
+                         **({} if stdin else {"stdin": subprocess.DEVNULL}))
+    res.stderr = res.stderr.decode("utf-8", "replace")
+    res.stdout = res.stdout.decode("utf-8", "replace")
     if res.returncode != 0:
         tail = "\n".join(res.stderr.strip().splitlines()[-12:])
         raise RuntimeError(f"ffmpeg failed ({res.returncode}):\n{tail}")
@@ -43,8 +48,10 @@ class MediaInfo:
     duration_s: float
     creation_utc: float | None
     video_sizes: tuple[tuple[int, int], ...]
+    audio: bool = False
 
 
+@lru_cache(maxsize=512)
 def probe(path: Path) -> MediaInfo:
     res = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", str(path)],
                          capture_output=True, text=True, encoding="utf-8", errors="replace")
@@ -58,7 +65,7 @@ def probe(path: Path) -> MediaInfo:
     if c:
         created = datetime.fromisoformat(c[1].replace("Z", "+00:00")).astimezone(timezone.utc).timestamp()
     sizes = tuple((int(w), int(h)) for w, h in re.findall(r"Stream #.*Video:.*?\b(\d{3,5})x(\d{3,5})\b", err))
-    return MediaInfo(duration, created, sizes)
+    return MediaInfo(duration, created, sizes, bool(re.search(r"Stream #.*Audio:", err)))
 
 
 @lru_cache

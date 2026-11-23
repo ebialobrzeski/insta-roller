@@ -18,6 +18,8 @@ Dwa główne typy materiału i dwa gotowe profile na jednym silniku, plus profil
 
 ## Sprzęt i architektura
 
+> **Zmiana z 23 listopada 2026:** aplikacja jest samodzielnym programem na PC z Windows (`python -m app`). Nic nie działa na NAS-ie: kolejka, wykonywanie zadań i UI są w jednym procesie, a NAS jest tylko dyskiem z nagraniami. Opisy podziału na serwer na NAS-ie i worker na PC poniżej są nieaktualne.
+
 - **Sklejanie (stitching):** Insta360 Media SDK. Wniosek o dostęp do SDK jest złożony.
 - SDK to biblioteka C++ wymagająca dedykowanej karty graficznej, więc sklejanie odbywa się na PC, nie na NAS-ie. WSL nie jest wspierany, zakładamy natywny build pod Windows.
 - **Worker:** PC z RTX 4080 albo starszy PC z RTX 3070 Ti. Ta sama binarka i ten sam skrypt, maszynę wskazuje konfiguracja.

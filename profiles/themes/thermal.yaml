@@ -1,0 +1,7 @@
+# Komin: circling, inner wing and the ground below.
+name: thermal
+title: Komin
+include: [thermal]
+max_per_type: {thermal: 4}
+target_length_s: 30
+min_material_s: 15

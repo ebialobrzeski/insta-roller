@@ -2,15 +2,15 @@
 from __future__ import annotations
 
 from .config import Profile
-from .contracts import Scene
-from .phases import Phase
+from .contracts import Scene, TelemetrySample
+from .phases import Phase, Track, bank_deg
 
 MIN_SCENE_S = 2.0
 
 
 def score(phase: Phase, profile: Profile) -> float:
     base = profile.scene_types[phase.type].base_score
-    if phase.type == "thermal":
+    if phase.type == "thermal" and "climb_ms" in phase.attrs:
         climb = max(phase.attrs.get("climb_ms", 0.0), 0.0)
         base += (1.0 - base) * min(climb / profile.thermal_good_climb_ms, 1.0)
         base += profile.thermal_low_bonus * low_factor(phase.attrs, profile)
@@ -48,3 +48,15 @@ def build_scenes(phases: list[Phase], video_start_utc: float, duration_s: float,
                             end_s=round(end, 2), score=score(ph, profile), attrs=attrs))
     present = {s.type for s in scenes}
     return scenes, [t for t in missing if t not in present]
+
+
+def telemetry_samples(track: Track, video_start_utc: float, duration_s: float) -> list[TelemetrySample]:
+    """Speed, altitude, vario and bank for every second of the video the track covers."""
+    out = []
+    for i in range(len(track)):
+        t = track.t0 + i - video_start_utc
+        if 0 <= t <= duration_s:
+            out.append(TelemetrySample(t=round(t, 2), speed_kmh=round(track.speed[i] * 3.6, 1),
+                                       alt_m=round(track.alt[i], 1), vario_ms=round(track.vario[i], 2),
+                                       bank_deg=round(bank_deg(track.speed[i], track.turn[i]), 1)))
+    return out

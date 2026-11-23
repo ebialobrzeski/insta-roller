@@ -1,5 +1,10 @@
-# Theme "skrót lotu": chronological highlights. Landing scenes are off by default.
+# Skrot lotu: the whole flight in one reel. Borrows scenes from the other reels.
+# Circuit and landing are used only when the `landing` theme is switched on.
 name: flight_summary
-include: [takeoff, tow, release, thermal, glide]
-max_per_type: {tow: 1, thermal: 3, glide: 2}
+title: Skrót lotu
+borrows: true
+include: [takeoff, tow, release, climb, engine_off, thermal, glide, circuit, landing]
+max_per_type: {tow: 1, climb: 1, thermal: 3, glide: 2, circuit: 1}
+target_length_s: 45
+# Without a recorded landing the reel ends on the pilot.
 ending: {preset: pilot_wide, duration_s: 4}

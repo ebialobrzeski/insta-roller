@@ -22,13 +22,16 @@ class Sync(BaseModel):
     video_start_utc: float   # unix time of video second 0
     offset_s: float          # manual correction that is already included above
     method: str
+    correlation: float | None = None
 
 
 class RecordingInfo(BaseModel):
     id: str
-    kind: str                # equirect | dual_fisheye
+    kind: str                # equirect | dual_fisheye | insv
     files: list[str]
     duration_s: float
+    start_utc: float | None = None
+    day: str = ""            # holiday: the local day the clip belongs to
 
 
 class Scene(BaseModel):
@@ -38,14 +41,30 @@ class Scene(BaseModel):
     end_s: float
     score: float
     attrs: dict = {}
+    recording: str = ""      # recording id; empty = the job's only recording
 
 
 class Scenes(Contract):
     fingerprint: str
-    recording: RecordingInfo
+    recording: RecordingInfo         # the main (or first) recording
+    recordings: list[RecordingInfo] = []
     sync: Sync
-    missing_phases: list[str]    # flight phases that the recording does not cover
+    source: str = "igc"              # where the scenes come from: igc | camera_gps | gyro | holiday
+    missing_phases: list[str]        # flight phases that the recording does not cover
     scenes: list[Scene]
+
+
+class TelemetrySample(BaseModel):
+    t: float                 # video time, s
+    speed_kmh: float
+    alt_m: float
+    vario_ms: float
+    bank_deg: float          # positive = right wing down, from turn rate and speed
+
+
+class Telemetry(Contract):
+    source: str
+    samples: list[TelemetrySample]   # one per second
 
 
 class Shot(BaseModel):
@@ -53,8 +72,11 @@ class Shot(BaseModel):
     scene_id: str
     type: str
     start_s: float
-    duration_s: float
+    duration_s: float            # source seconds
     framing: list[str]           # resolved preset names, in order
+    recording: str = ""
+    speed: float = 1.0
+    attrs: dict = {}
 
 
 class ReelPlan(Contract):
@@ -62,6 +84,8 @@ class ReelPlan(Contract):
     target_length_s: float
     length_s: float
     shots: list[Shot]
+    edited: bool = False         # set by a manual edit; `plan` then leaves the file alone
+    title: str = ""
 
 
 class Keyframe(BaseModel):
@@ -70,6 +94,7 @@ class Keyframe(BaseModel):
     pitch: float
     roll: float
     fov: float                   # diagonal
+    ev: float = 0.0              # exposure correction
 
 
 class FramedShot(BaseModel):
@@ -78,6 +103,9 @@ class FramedShot(BaseModel):
     start_s: float
     duration_s: float
     keyframes: list[Keyframe]    # smoothstep between consecutive keyframes
+    recording: str = ""
+    speed: float = 1.0
+    type: str = ""
 
 
 class FramingPlan(Contract):
@@ -87,6 +115,21 @@ class FramingPlan(Contract):
     height: int
     fps: float
     shots: list[FramedShot]
+    source: str = ""             # fingerprint of the reel plan this was made from
+
+
+class ReelEntry(BaseModel):
+    theme: str
+    tag: str
+    status: str                  # planned | skipped
+    reason: str = ""
+    length_s: float = 0.0
+    shots: int = 0
+
+
+class ReelSet(Contract):
+    """What `plan` decided: which reels exist and which were left out, and why."""
+    reels: list[ReelEntry]
 
 
 class JobState(Contract):
@@ -98,6 +141,8 @@ CONTRACTS = {
     "scenes": Scenes,
     "reel_plan": ReelPlan,
     "framing_plan": FramingPlan,
+    "telemetry": Telemetry,
+    "reels": ReelSet,
     "job_state": JobState,
 }
 

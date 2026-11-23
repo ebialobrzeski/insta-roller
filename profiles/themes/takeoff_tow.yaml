@@ -1,0 +1,7 @@
+# Start i hol: ground roll, launch climb and the release.
+name: takeoff_tow
+title: Start i hol
+include: [takeoff, tow, release, climb, engine_off]
+max_per_type: {tow: 2, climb: 2}
+target_length_s: 20
+min_material_s: 10

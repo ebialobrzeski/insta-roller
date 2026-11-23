@@ -1,0 +1,62 @@
+# Profile "lot", motor glider: camera on the canopy, engine start, climb and
+# engine-off instead of tow and release. Engine-off is found from the sound.
+name: flight_motor
+output: {width: 1080, height: 1920, fps: 30}
+target_length_s: 45
+audio: false
+kind: flight
+aircraft: motorglider
+mount: motorglider_canopy
+# One reel per theme with enough material. A scene goes to one reel only;
+# flight_summary borrows from the others. `landing` is switched off in its
+# theme file: turn it on for a job with `--enable landing`.
+themes: [takeoff_tow, thermal, glide_views, landing, flight_summary]
+encoder: auto            # auto = h264_nvenc when available, else libx264
+transition_s: 1.5        # camera move between presets inside one shot
+shot_handles_s: 1.5      # spare footage at both ends of exported shots
+# Parts of the frame hidden by the TikTok / Instagram interface (fractions).
+# Framing moves the subject into the free area; the overlay stays inside it.
+safe_zone: {top: 0.08, bottom: 0.20, left: 0.0, right: 0.12}
+# Flight data drawn on the reel: speed dial, altitude, vario.
+overlay: {enabled: true, speed: true, altitude: true, vario: true, speed_max_kmh: 200, scale: 1.0}
+# Automatic sync: gyro turns are matched to the flight track around the camera clock.
+sync: {search_s: 90, min_correlation: 0.4}
+thermal_good_climb_ms: 3.0   # climb rate that earns a thermal the full score
+# Low thermals show the ground in detail. A thermal entered below this height
+# above the airfield scores higher (full bonus at ground level, none at the
+# limit) and its shot is cut from the start, where the glider is lowest.
+thermal_low_agl_m: 800
+thermal_low_bonus: 0.5
+
+detection:
+  takeoff_speed_ms: 12.0
+  landing_speed_ms: 8.0
+  speed_hold_s: 5
+  takeoff_scene_s: 25
+  release_vario_ms: 0.3        # launch climb ends when mean vario drops below this
+  release_window_s: 20
+  release_min_after_takeoff_s: 20
+  release_min_gain_m: 50
+  release_scene_s: 12
+  circling_rate_dps: 6.0
+  circling_gap_s: 15
+  thermal_min_s: 40
+  thermal_min_turn_deg: 360
+  glide_min_s: 30
+  circuit_agl_m: 300
+  circuit_max_s: 360
+  final_s: 40
+  rollout_s: 15
+  turn_smooth_s: 10
+  vario_smooth_s: 20
+
+# framing: presets shown in order within one shot. back_inner / back_outer
+# resolve to back_left / back_right from the circling direction.
+scene_types:
+  takeoff: {weight: 1.0, base_score: 1.0, min_shot_s: 5, max_shot_s: 10, anchor: start, framing: [front]}
+  climb:      {weight: 0.5, base_score: 0.5, min_shot_s: 3, max_shot_s: 6,  anchor: center, framing: [instruments, front]}
+  engine_off: {weight: 0.9, base_score: 0.8, min_shot_s: 4, max_shot_s: 8,  anchor: center, framing: [front, crew]}
+  thermal: {weight: 1.0, base_score: 0.4, min_shot_s: 5, max_shot_s: 10, anchor: center, framing: [wing_inner, back_inner]}
+  glide:   {weight: 0.7, base_score: 0.5, min_shot_s: 4, max_shot_s: 8,  anchor: center, framing: [pilot_wide, front]}
+  circuit: {weight: 0.8, base_score: 0.7, min_shot_s: 4, max_shot_s: 8,  anchor: end, framing: [front]}
+  landing: {weight: 1.0, base_score: 1.0, min_shot_s: 6, max_shot_s: 12, anchor: end, framing: [front]}

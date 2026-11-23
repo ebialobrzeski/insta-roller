@@ -1,0 +1,9 @@
+# Ladowanie: circuit and touchdown. Switched off by default; while it is off
+# no reel uses the gated scene types. Turn on per job: --enable landing
+name: landing
+title: Lądowanie
+enabled: false
+gates: [circuit, landing]
+include: [circuit, landing]
+target_length_s: 20
+min_material_s: 10

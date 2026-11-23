@@ -1,0 +1,6 @@
+# One film per day (or one of the whole trip), clips in the order they were shot.
+name: holiday_day
+title: Dzień
+include: [view, walk, holder, companion, panorama]
+target_length_s: 60
+min_material_s: 8

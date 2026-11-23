@@ -14,3 +14,10 @@ work/
 *.lrv
 *.mp4
 !tests/data/*.mp4
+
+# Local secrets
+.env
+people.json
+
+# Stitcher build output (contains the licensed SDK runtime)
+stitcher/build/

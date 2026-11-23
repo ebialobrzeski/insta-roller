@@ -1,0 +1,35 @@
+# Profile "urlop": walks with a selfie stick, 360 camera on the end. Horizontal film.
+name: holiday
+kind: holiday
+output: {width: 1920, height: 1080, fps: 30}
+target_length_s: 60          # one day
+audio: true                  # original sound; sped-up parts are silent
+audio_fade_s: 0.25           # fade at every cut
+mount: selfie_stick
+themes: [holiday_day]
+encoder: auto
+transition_s: 2.0
+shot_handles_s: 1.5
+# People to recognise (names as in Immich) and their share of screen time.
+# Needs `insta-roller faces-export`; without it the films are made without people framing.
+people: {Emil: 1, Kasia: 1, "Łukasz Karczewski": 1, "Asia Karczewska": 1}
+person_bonus: 0.2
+
+holiday:
+  day_starts_at_h: 4         # clips before 04:00 belong to the evening before
+  trim_s: 2.0                # cut from both ends of every clip
+  lowered_tilt_deg: 55       # stick further than this from upright = camera lowered
+  window_s: 2.0
+  still_dps: 12              # below this rotation rate the holder stands still
+  still_min_s: 6
+  long_walk_s: 20            # walking longer than this is shown sped up
+  speech_db: 8               # sound this far above the clip's quiet level = speech
+  min_per_day_s: 20          # trip film: every day gets at least this much
+  trip_length_s: 180
+
+scene_types:
+  view:      {weight: 1.0, base_score: 0.6, min_shot_s: 4, max_shot_s: 8,  anchor: center, framing: [view]}
+  walk:      {weight: 0.6, base_score: 0.4, min_shot_s: 3, max_shot_s: 6,  anchor: center, framing: [view], speed: 4}
+  holder:    {weight: 1.0, base_score: 0.7, min_shot_s: 4, max_shot_s: 10, anchor: center, framing: [holder]}
+  companion: {weight: 1.0, base_score: 0.8, min_shot_s: 4, max_shot_s: 10, anchor: center, framing: [companion]}
+  panorama:  {weight: 0.9, base_score: 0.7, min_shot_s: 6, max_shot_s: 12, anchor: center, framing: [panorama]}

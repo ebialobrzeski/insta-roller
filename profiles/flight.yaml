@@ -3,10 +3,23 @@ name: flight
 output: {width: 1080, height: 1920, fps: 30}
 target_length_s: 45
 audio: false
+kind: flight
+aircraft: glider
 mount: glider_panel
-theme: flight_summary
+# One reel per theme with enough material. A scene goes to one reel only;
+# flight_summary borrows from the others. `landing` is switched off in its
+# theme file: turn it on for a job with `--enable landing`.
+themes: [takeoff_tow, thermal, glide_views, landing, flight_summary]
 encoder: auto            # auto = h264_nvenc when available, else libx264
 transition_s: 1.5        # camera move between presets inside one shot
+shot_handles_s: 1.5      # spare footage at both ends of exported shots
+# Parts of the frame hidden by the TikTok / Instagram interface (fractions).
+# Framing moves the subject into the free area; the overlay stays inside it.
+safe_zone: {top: 0.08, bottom: 0.20, left: 0.0, right: 0.12}
+# Flight data drawn on the reel: speed dial, altitude, vario.
+overlay: {enabled: true, speed: true, altitude: true, vario: true, speed_max_kmh: 200, scale: 1.0}
+# Automatic sync: gyro turns are matched to the flight track around the camera clock.
+sync: {search_s: 90, min_correlation: 0.4}
 thermal_good_climb_ms: 3.0   # climb rate that earns a thermal the full score
 # Low thermals show the ground in detail. A thermal entered below this height
 # above the airfield scores higher (full bonus at ground level, none at the

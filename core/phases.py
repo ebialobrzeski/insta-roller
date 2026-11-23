@@ -113,8 +113,11 @@ def _last_sustained(values: list[float], threshold: float, hold: int) -> int | N
     return None
 
 
-def detect_phases(fixes: list[Fix], p: Detection) -> list[Phase]:
-    tr = build_track(fixes, p)
+def detect_phases(fixes: list[Fix], p: Detection, aircraft: str = "glider",
+                  engine_off_utc: float | None = None, track: Track | None = None) -> list[Phase]:
+    """aircraft "motorglider": the launch climb is `climb` and ends with `engine_off`,
+    at engine_off_utc when the sound gave it away, else where the climb stops."""
+    tr = track or build_track(fixes, p)
     n = len(tr)
     T = lambda i: tr.t0 + i  # noqa: E731
     phases: list[Phase] = []
@@ -146,6 +149,8 @@ def detect_phases(fixes: list[Fix], p: Detection) -> list[Phase]:
                 release = i + top.index(max(top))       # the top of the climb
                 break
             i += 1
+        if engine_off_utc is not None and roll < engine_off_utc - tr.t0 < flight_end:
+            release = int(engine_off_utc - tr.t0)
         takeoff_end = min(roll + int(p.takeoff_scene_s), release or flight_end)
         phases.append(Phase("takeoff", T(roll), T(takeoff_end)))
         if release is not None:
@@ -201,5 +206,40 @@ def detect_phases(fixes: list[Fix], p: Detection) -> list[Phase]:
                 "speed_kmh": round(sum(tr.speed[a:b]) / (b - a) * 3.6),
             }))
 
+    if aircraft == "motorglider":
+        for ph in phases:
+            ph.type = {"tow": "climb", "release": "engine_off"}.get(ph.type, ph.type)
+    phases.sort(key=lambda ph: ph.start)
+    return phases
+
+
+def bank_deg(speed_ms: float, turn_dps: float) -> float:
+    """Bank of a coordinated turn; positive = right wing down."""
+    return math.degrees(math.atan(speed_ms * math.radians(turn_dps) / 9.81))
+
+
+def phases_from_gyro(turn_dps: list[float], t0: float, p: Detection) -> list[Phase]:
+    """Last resort without any position data: circling and straight flight from
+    the gyroscope alone. turn_dps is the turn rate about the vertical at 1 Hz."""
+    turn = _smooth(turn_dps, p.turn_smooth_s)
+    n = len(turn)
+    runs: list[list[int]] = []
+    for i in range(n):
+        if abs(turn[i]) >= p.circling_rate_dps:
+            if runs and i - runs[-1][1] <= p.circling_gap_s:
+                runs[-1][1] = i
+            else:
+                runs.append([i, i])
+    phases, edges = [], [0]
+    for a, b in runs:
+        turned = sum(turn[a:b + 1])
+        if b - a >= p.thermal_min_s and abs(turned) >= p.thermal_min_turn_deg:
+            phases.append(Phase("thermal", t0 + a, t0 + b, {
+                "direction": "right" if turned > 0 else "left", "turns": round(abs(turned) / 360, 1)}))
+            edges += [a, b]
+    edges.append(n - 1)
+    for a, b in zip(edges[0::2], edges[1::2]):
+        if b - a >= p.glide_min_s:
+            phases.append(Phase("glide", t0 + a, t0 + b, {}))
     phases.sort(key=lambda ph: ph.start)
     return phases

@@ -4,34 +4,57 @@ A recording is one continuous take. The camera splits long takes into several
 files that share a timestamp; they are joined into one timeline here.
 
 The equirectangular source sits behind one interface with several
-implementations: an Insta360 Studio export, the camera's dual-fisheye LRV
-proxy (rough stitch, for development), and later the Media SDK stitcher.
+implementations (`kind`):
+
+- equirect      an Insta360 Studio export,
+- sdk           a segment stitched by the Media SDK stitcher (`core/stitch.py`),
+- dual_fisheye  the camera's LRV proxy, stitched roughly by FFmpeg (analysis, previews),
+- insv          the camera's full-quality file, stitched roughly by FFmpeg when
+                the Media SDK stitcher is not available.
 """
 from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import ffmpeg
-from .config import Mount
+from .config import Calibration, Mount
 
 _CAMERA = re.compile(r"^(VID|LRV)_(\d{8}_\d{6})_\d{2}_(\d{3})\.(insv|lrv)$", re.I)
+EQ = "[eq]"
 
 
 @dataclass
 class Recording:
     id: str
-    kind: str                    # equirect | dual_fisheye
+    kind: str                    # equirect | dual_fisheye | insv
     files: list[Path]
     durations: list[float]
     start_utc: float | None      # camera clock at the first frame
     size: tuple[int, int]
+    alt: dict[str, "Recording"] = field(default_factory=dict)    # the same take from other files
 
     @property
     def duration_s(self) -> float:
         return sum(self.durations)
+
+    def variant(self, kind: str) -> "Recording":
+        return self if kind == self.kind else self.alt[kind]
+
+    def best(self) -> "Recording":
+        """The sharpest files of this take."""
+        return self.alt.get("insv", self) if self.kind == "dual_fisheye" else self
+
+    def locate(self, start_s: float) -> tuple[Path, float]:
+        """(file, time inside it) of a moment on the joined timeline."""
+        offset = 0.0
+        for path, length in zip(self.files, self.durations):
+            if start_s < offset + length or path == self.files[-1]:
+                return path, start_s - offset
+            offset += length
+        raise ValueError("empty recording")
 
     def input_args(self, work: Path, start_s: float, duration_s: float = 0.0) -> list[str]:
         """FFmpeg input arguments seeked to start_s on the joined timeline.
@@ -41,26 +64,47 @@ class Recording:
         """
         offset = 0.0
         for path, length in zip(self.files, self.durations):
-            if offset <= start_s and start_s + duration_s <= offset + length:
+            if offset <= start_s and start_s + duration_s <= offset + length + 0.1:
                 return ["-ss", f"{start_s - offset:.3f}", "-i", str(path)]
             offset += length
-        listing = work / f"concat_{self.id}.txt"
+        listing = work / f"concat_{self.id}_{self.kind}.txt"
         work.mkdir(parents=True, exist_ok=True)
         lines = ["file '%s'" % f.as_posix().replace("'", "'\\''") for f in self.files]
         listing.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return ["-ss", f"{start_s:.3f}", "-f", "concat", "-safe", "0", "-i", str(listing)]
 
-    def to_aircraft_frame(self, mount: Mount) -> str | None:
-        """Filter that yields an equirectangular picture in the aircraft frame."""
+    def calibration(self, mount: Mount) -> Calibration | None:
         cal = mount.calibration.get(self.kind)
-        rot = "" if cal is None else f":yaw={cal.yaw}:pitch={cal.pitch}:roll={cal.roll}"
-        if self.kind == "dual_fisheye":
+        if cal is None and self.kind in ("insv", "sdk"):   # same lens layout as the proxy
+            cal = mount.calibration.get("dual_fisheye")
+        return cal
+
+    def source_graph(self, mount: Mount, level: tuple[float, float] | None = None) -> str:
+        """Filter graph from the input to an equirectangular picture in the
+        aircraft (or holder) frame, labelled [eq]. level = (pitch, roll) replaces
+        the mount's fixed tilt, for a camera that is levelled clip by clip."""
+        cal = self.calibration(mount)
+        yaw, pitch, roll = (cal.yaw, cal.pitch, cal.roll) if cal else (0.0, 0.0, 0.0)
+        if level is not None and not (cal and cal.stabilized):
+            pitch, roll = level
+        else:
+            level = None
+        rot = f":yaw={yaw:g}:pitch={pitch:g}:roll={roll:g}"
+        if level is not None or (cal and cal.rorder != "ypr"):
+            rot += f":rorder={'rpy' if level is not None else cal.rorder}"
+        if self.kind in ("dual_fisheye", "insv"):
             fov = cal.lens_fov if cal and cal.lens_fov else 190
-            w, h = self.size
-            return f"v360=input=dfisheye:output=e:ih_fov={fov}:iv_fov={fov}:w={w}:h={w // 2}{rot}"
-        if cal and (cal.yaw or cal.pitch or cal.roll):
-            return f"v360=input=e:output=e{rot}"
-        return None
+            if self.kind == "insv":          # one video track per lens
+                w = min(self.size[0] * 2, cal.width) if cal and cal.width else self.size[0] * 2
+                lens = f"scale={w // 2}:{w // 2}" if w < self.size[0] * 2 else "null"
+                head = f"[0:v:1]{lens}[l1];[0:v:0]{lens}[l0];[l1][l0]hstack=inputs=2,"
+            else:
+                w = self.size[0]
+                head = "[0:v:0]"
+            return f"{head}v360=input=dfisheye:output=e:ih_fov={fov:g}:iv_fov={fov:g}:w={w}:h={w // 2}{rot}{EQ}"
+        if yaw or pitch or roll:
+            return f"[0:v:0]v360=input=e:output=e{rot}{EQ}"
+        return f"[0:v:0]null{EQ}"
 
 
 def discover(folder: Path) -> tuple[list[Recording], list[Path]]:
@@ -71,17 +115,30 @@ def discover(folder: Path) -> tuple[list[Recording], list[Path]]:
     groups: dict[tuple[str, str], list[tuple[int, Path]]] = {}
     for p in files:
         m = _CAMERA.match(p.name)
-        if m and m[4].lower() == "lrv":
-            groups.setdefault((m[2], "dual_fisheye"), []).append((int(m[3]), p))
+        if m:
+            kind = "dual_fisheye" if m[4].lower() == "lrv" else "insv"
+            groups.setdefault((m[2], kind), []).append((int(m[3]), p))
         elif p.suffix.lower() == ".mp4":
             groups.setdefault((p.stem, "equirect"), []).append((0, p))
 
-    recordings = []
+    takes: dict[str, dict[str, Recording]] = {}
     for (rec_id, kind), parts in sorted(groups.items()):
         paths = [p for _, p in sorted(parts)]
-        infos = [ffmpeg.probe(p) for p in paths]
-        recordings.append(Recording(rec_id, kind, paths, [i.duration_s for i in infos],
-                                    infos[0].creation_utc, infos[0].video_sizes[0]))
+        try:
+            infos = [ffmpeg.probe(p) for p in paths]
+        except RuntimeError:            # a file that is still being copied
+            continue
+        if not infos[0].video_sizes:
+            continue
+        takes.setdefault(rec_id, {})[kind] = Recording(
+            rec_id, kind, paths, [i.duration_s for i in infos], infos[0].creation_utc, infos[0].video_sizes[0])
+
+    recordings = []
+    for rec_id, kinds in sorted(takes.items()):
+        # The small proxy is the working copy when the camera made one.
+        main = kinds.get("dual_fisheye") or kinds.get("equirect") or kinds["insv"]
+        main.alt = {k: r for k, r in kinds.items() if r is not main}
+        recordings.append(main)
     return recordings, igc
 
 

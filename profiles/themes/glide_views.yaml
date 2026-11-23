@@ -1,0 +1,9 @@
+# Przelot i widoki: straight flight between thermals.
+name: glide_views
+title: Przelot i widoki
+include: [glide]
+max_per_type: {glide: 4}
+framing:
+  glide: [front_level, pilot_wide]
+target_length_s: 25
+min_material_s: 12

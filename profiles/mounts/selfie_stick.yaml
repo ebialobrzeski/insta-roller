@@ -1,0 +1,19 @@
+# Mount "kij do selfie": camera on a hand-held stick. Every scene is levelled
+# with the camera's gravity sensor, so the horizon is always locked.
+# yaw is relative to a direction found by the analysis (track):
+#   travel = the way ahead, holder = the person with the stick, person = a recognised companion.
+name: selfie_stick
+
+calibration:
+  insv:         {lens_fov: 200, auto_level: true, width: 4096}
+  dual_fisheye: {lens_fov: 200, auto_level: true}
+  equirect:     {stabilized: true}
+  # Media SDK stitch, FlowState with direction lock: stabilised, horizon level,
+  # and the view keeps turning with the camera, so the holder stays at the same yaw.
+  sdk:          {stabilized: true, stabilize: direction-lock, width: 3840}
+
+presets:
+  view:      {yaw: 0, pitch: 0,   fov: 115, track: travel, safe_zone: false}
+  holder:    {yaw: 0, pitch: -10, fov: 105, track: holder, safe_zone: false}
+  companion: {yaw: 0, pitch: -5,  fov: 95,  track: person, safe_zone: false}
+  panorama:  {yaw: -40, pitch: 0, fov: 110, track: travel, pan_dps: 8, safe_zone: false}

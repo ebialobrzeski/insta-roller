@@ -3,8 +3,18 @@
 Turns Insta360 X5 360° recordings into finished videos automatically. The full
 design is in `Insta360 X5 – automatyczne kadrowanie i montaż (moduł 1).md`.
 
-**Status: stage 1** – one flight, one "flight summary" reel. No Media SDK, no UI,
-no face recognition.
+| Stage | What | State |
+| --- | --- | --- |
+| 1 | One flight, one reel | done, run on real flights |
+| 2 | Themes, several reels, separate shots, safe zone, horizon, exposure | done, run on real flights |
+| 3 | Camera GPS / gyro, automatic sync, flights without IGC, motor glider | done; motor glider untested (no footage) |
+| – | Flight data overlay (speed, altitude, vario) | done |
+| 4 | Media SDK stitcher (`stitcher/`) | done: built with VS 2022 Build Tools, used for rendering by default; slow (about 15 s per second of 5.7K footage) |
+| 5 | Holiday profile | done from sensors and sound; see limits below |
+| 6 | People from Immich (`core/faces.py`) | done: exported from a real Immich 3.4.2 and recognised on real clips; people are sampled three times per scene, not tracked frame by frame |
+| 7 | Standalone Windows app: queue, job runner, browser UI (`app/`) | done; one real job run end to end on this PC; network-drive and UNC job folders untried |
+
+`docs/sample-run.md` records runs on real footage.
 
 ## Setup
 
@@ -14,64 +24,175 @@ py -3.13 -m venv .venv
 ```
 
 FFmpeg is taken from `INSTA_ROLLER_FFMPEG`, then `PATH`, then the bundled
-`imageio-ffmpeg` binary.
+`imageio-ffmpeg` binary. NVENC is used when the GPU offers it.
 
 ## Use
 
-A job is a folder holding the recording and the IGC log. Originals are never
-modified; everything is written to `<folder>/insta-roller` or to `--out`.
+A job is a folder with the camera files (`VID_*.insv`, `LRV_*.lrv`) and, for a
+flight, the IGC log. Originals are never modified; everything is written to
+`<folder>/insta-roller` or to `--out`, caches to `--work`.
 
 ```powershell
-insta-roller run "C:\flights\2026-06-24" --out work\flight --offset 14
-insta-roller run "C:\flights\2026-06-24" --out work\flight --offset 14 --length 25
+insta-roller run "D:\flights\2026-06-23" --out work\flight
+insta-roller run "D:\flights\2026-06-23" --out work\flight --length 25 --themes flight_summary
+insta-roller run "D:\flights\2026-06-23" --out work\flight --enable landing --shots
+insta-roller run "D:\holiday\cruise" --out work\cruise --mode both
 ```
 
-The second call makes a new version with a different length. It reuses the
-analysis and every shot that did not change.
+The profile is guessed: an IGC file in the folder means `flight`, otherwise
+`holiday`. `--profile flight_motor` selects the motor glider.
 
-Each step is also its own command, and each is idempotent:
+Each step is its own idempotent command; `run` calls them in order. A new
+length or theme reuses the analysis and every shot that did not change.
 
 | Command | Result |
 | --- | --- |
-| `analyze` | `scenes.json`, `scenes_report.txt` |
-| `plan` | `reel_plan_<theme>_<length>s.json`, `framing_plan_<theme>_<length>s.json` |
-| `render` | `reel_<theme>_<length>s.mp4` |
-| `preview --at <seconds>` | one still per preset, to check the mount calibration |
-| `phases <file.igc>` | flight phases of a log, to compare with your own notes |
+| `analyze` | `scenes.json`, `telemetry.json`, `scenes_report.txt` |
+| `plan` | `reels.json`, and per reel `reel_plan_<tag>.json`, `framing_plan_<tag>.json` |
+| `render` | `reel_<tag>.mp4` for every planned reel |
+| `shots` | `shots_<tag>/NN_<type>.mp4`: the shots as separate H.264 files with spare footage at both ends |
+| `preview --at <s>` | one still per preset with the safe zone shaded |
+| `proxy` | low-resolution working copies of takes without an LRV file |
+| `phases <file.igc>` | flight phases of a log |
+| `profiles` | available profiles, mounts and themes |
 | `schemas <folder>` | JSON schemas of the data contracts |
+| `faces-export`, `faces-check` | people from Immich (stage 6) |
 
-The framing plan can be edited by hand before `render`; it is only regenerated
-when the reel plan changes or with `--force`.
+`<tag>` is `<theme>_<length>s`, e.g. `thermal_30s`.
+
+Manual edits survive: a reel plan with `"edited": true` is kept by `plan`, and
+a framing plan is only regenerated when its reel plan changes or with `--force`.
+`run --review` stops after `plan` so the plans can be edited before `render`.
+
+## Flight profile
+
+### Reels and themes
+
+A theme (`profiles/themes/*.yaml`) is a template: which scene types a reel
+uses, how they are framed, its length and how much material it needs. The
+profile lists the themes; one reel is made per theme with enough material.
+
+- `takeoff_tow`, `thermal`, `glide_views`: a scene goes to one reel only.
+- `flight_summary` borrows scenes from the others.
+- `landing` is switched off in its file. While it is off no reel uses circuit
+  or touchdown scenes and the summary ends on the pilot. `--enable landing`
+  turns it on for a job; a recorded landing then ends the summary too.
+- A new theme is one new YAML file plus its name in the profile or `--themes`.
+
+`reels.json` says which reels were planned and why any was left out.
+
+### Data sources and sync
+
+In order of preference:
+
+1. **IGC log.** The video clock is tied to it automatically: turn rate from
+   the camera's gyroscope is correlated with the turn rate of the track. On
+   the two test flights this gives correlation 0.8–0.9 and the same answer for
+   every 30-minute file to within about half a second.
+2. **GPS remote data stored in the camera file** (`--no-igc`, or no IGC in the
+   folder). Scenes come from the camera's own 10 Hz GPS track.
+3. **Gyroscope only.** Thermals with direction and glides; no takeoff or landing.
+
+`--video-start` turns automatic sync off; `--offset` shifts its result.
+The camera clock itself was 10–14 s behind GPS time on the test flights, and
+the phone's IGC is about 2 s ahead of the GPS remote's time stamps.
+
+A recording that ends before the landing is detected by comparing it with the
+track; the missing phases are listed in `scenes.json` and the reels end on the
+pilot instead.
 
 ### Video source
 
-- **Insta360 Studio export** (`.mp4`, equirectangular, stabilisation off) – the
-  intended stage 1 input.
-- **LRV proxy** (`LRV_*.lrv` next to the `.insv` files) – a rough dual-fisheye
-  stitch done by FFmpeg. Low resolution and a visible seam; good enough to test
-  scene and framing logic without any manual export.
+Analysis runs on sensor data only. Rendering uses, in this order:
 
-A take that the camera split into several files is joined into one timeline.
-With several takes or several IGC files in the folder, the pair that overlaps
-most is used; `--recording` and `--igc` override that.
+- the Media SDK stitcher when it is built (`--source sdk` insists on it),
+- the full-quality `VID_*.insv` files, stitched roughly by FFmpeg,
+- the `LRV_*.lrv` proxy (`--source proxy`: fast, soft, for trying things out),
+- an equirectangular `.mp4` exported from Insta360 Studio.
 
-### Sync
+The FFmpeg stitch (`--source ffmpeg`) has a visible seam and no stabilisation;
+it is the quick fallback. `--source proxy` is quicker still.
 
-Video time zero is the camera clock (`creation_time`) plus `--offset` seconds.
-`--video-start` sets the UTC start time directly. Automatic sync comes in stage 3.
+### Framing
 
-## Configuration
+Mounts (`profiles/mounts/*.yaml`) hold the calibration and the presets.
+Per preset: angles, field of view, `horizon` (`aircraft` banks with the glider,
+`locked` keeps the horizon level using the bank angle from the gyroscope and
+speed) and `exposure_ev`.
 
-Nothing is hard-coded: `profiles/flight.yaml` (detection thresholds, scene
-weights, shot lengths, framing per scene type), `profiles/mounts/*.yaml`
-(calibration and preset angles), `profiles/themes/*.yaml` (which scenes a reel uses).
+`safe_zone` in the profile describes what the TikTok / Instagram interface
+covers. Framing moves each preset's subject to the centre of the free area and
+the overlay stays inside it; `preview` shades the covered parts.
+
+`motorglider_canopy` has the presets `instruments`, `left_seat`, `right_seat`
+and `crew`; its `aliases` decide whether "pilot" shots show one seat or both.
+Its angles are first guesses and need a look at real footage.
+
+### Overlay
+
+`overlay` in the profile (or `--overlay` / `--no-overlay`) draws a speed dial,
+altitude and vario from `telemetry.json`. Speed is ground speed. Altitude is
+the log's GPS altitude (an IGC from a phone is about 30 m above the GPS
+remote's value: ellipsoid against sea level).
+
+## Holiday profile
+
+Many short clips from a selfie stick, several days in one folder.
+
+- Day = the local date in the file name, with the boundary at `day_starts_at_h`.
+- The gravity sensor drops stretches with the camera lowered and levels every
+  scene; the first and last seconds of a clip are cut.
+- Scene types: `view` (walking), `walk` (long walking, sped up and silent),
+  `holder` (speech), `panorama` (standing still, slow turn), `companion`
+  (a recognised person, stage 6).
+- `--mode day` makes one film per day, `--mode trip` one film of everything
+  with a share per day, `--mode both` both, from the same analysis.
+- Original sound with a short fade at every cut.
+
+With the Media SDK stitcher the clips are stabilised (FlowState with direction
+lock). With the FFmpeg stitch scenes are only levelled once per scene. In both
+cases the walking direction is assumed to be the lens
+facing away from the holder (there is no GPS or optical-flow estimate yet).
+
+## People (Immich)
+
+```powershell
+$env:IMMICH_API_KEY = "..."
+insta-roller faces-export --immich-url http://nas:2283 --api-key-env IMMICH_API_KEY --people "Ania,Emil" --out people.json
+insta-roller faces-check people.json
+```
+
+`faces-export` copies the face vectors of the named people out of Immich
+(read only; `--db-url` reads them straight from its database, the API path
+re-embeds sample photos with the same `buffalo_l` model). Needs
+`pip install -e ".[faces]"`.
+
+Put `people.json` in the job folder. The holiday analysis then looks for
+those people in every scene: a scene with a known person scores higher, a
+walking scene becomes a `companion` shot aimed at them, a group is framed
+together and screen time is balanced with the weights in `people:` of the
+profile. Strangers are never a target. Without the file or the model the films
+are made as before.
+
+## Stitcher, queue and UI
+
+- `stitcher/README.md`: building the Media SDK stitcher. Once
+  `insta-stitcher.exe` exists under `stitcher/build` (or `INSTA_ROLLER_STITCHER`
+  points at it) rendering uses it for the spans of each shot, with a
+  size-limited cache (`--cache-gb`); `tools/bench_stitch.py` measures time and
+  GPU memory into `docs/stitch-benchmark.md`.
+- `app/README.md`: the application, one process on the Windows PC started with
+  `python -m app` or `insta-roller.bat`: job queue, job runner and the browser
+  UI (new job, queue, results, settings, scene review).
+
+## Data contracts
+
+`scenes.json`, `telemetry.json`, `reels.json`, `reel_plan_*.json`,
+`framing_plan_*.json` and `job_state.json` are the only interface between the
+steps and to the UI. `insta-roller schemas <folder>` exports their schemas.
 
 ## Tests
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\python.exe -m pytest -q
 ```
-
-The tests build a synthetic flight with known phase times and run the whole
-pipeline on a generated clip. A sample run on a real flight is in
-`docs/sample-run.md`.

@@ -32,7 +32,7 @@ def mount(profile):
 
 @pytest.fixture(scope="module")
 def theme(profile):
-    return load_theme(profile.theme)
+    return load_theme("flight_summary")
 
 
 @pytest.fixture()
@@ -90,7 +90,7 @@ def test_log_that_ends_in_the_air_has_no_landing(tmp_path, profile):
 def _plan(flight, profile, theme, mount, length, video_offset=30.0, duration=3600.0):
     fixes, phases, _ = flight
     scenes, missing = build_scenes(phases, fixes[0].t + video_offset, duration, profile)
-    return scenes, missing, plan_reel(scenes, profile, theme, mount, length)
+    return scenes, missing, plan_reel(scenes, profile, theme, mount, length, barred=frozenset({"circuit", "landing"}))
 
 
 def test_reel_respects_length_theme_and_order(flight, profile, theme, mount):
@@ -173,9 +173,9 @@ def test_one_command_from_folder_to_reel(tmp_path, capsys):
     subprocess.run([ffmpeg.ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-f", "lavfi",
                     "-i", "testsrc2=s=320x160:r=5:d=1200", "-c:v", "libx264", "-preset", "ultrafast",
                     "-g", "5", str(job / "export.mp4")], check=True)
-    common = [str(job), "--video-start", "2026-06-24T10:00:30Z"]
+    common = [str(job), "--video-start", "2026-06-24T10:00:30Z", "--themes", "takeoff_tow,flight_summary"]
 
-    main(["run", *common, "--length", "20"])
+    main(["run", *common, "--length", "20", "--shots"])
     out = job / "insta-roller"
     reel = out / "reel_flight_summary_20s.mp4"
     assert reel.exists()

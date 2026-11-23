@@ -73,3 +73,71 @@ plan: 9 shots, 45.0s (target 45s) -> framing_plan_flight_summary_45s.json
    8. 2:08:58    5.9s  thermal  back_right -> pilot_wide
    9. 2:28:34    4.0s  ending   pilot_wide
 ```
+
+
+# Stages 2-5, run of 23 November 2026
+
+## Flight of 23 June 2026 (camera files with GPS remote data)
+
+Winch launch, 2 h 20 min in the log, 2 h 24 min recorded in five files; the
+recording ends about 7 minutes before the landing. No manual offset.
+
+```
+insta-roller run <folder> --out work/flight2 --shots
+```
+
+```
+Recording 20260623_114648 (dual_fisheye), 2:23:38, starts 09:47:00 UTC (gyro turns matched to the track, correlation 0.81)
+Scenes from: IGC 2026-06-23-XNA-230596-01.igc: 09:59:42 - 12:19:53 UTC, 41 phases
+plan: takeoff_tow_20s: 3 shots, 20.0s
+plan: thermal_30s: 4 shots, 30.0s
+plan: glide_views_25s: 4 shots, 25.0s
+plan: flight_summary_45s: 9 shots, 45.0s
+plan: landing_20s: no reel, theme is switched off
+```
+
+- Camera clock: 09:46:48. GPS remote in the file: 09:46:58. IGC (phone): 09:47:00.
+- The same flight with `--no-igc` (camera GPS only) finds the same scenes
+  within one second; start 09:46:58, correlation 0.82.
+- Flight of 24 June (no GPS in the camera): automatic sync gives 10:50:25,
+  the offset set by eye in stage 1 gave 10:50:26. Correlation 0.90.
+  With `--no-igc` it falls back to the gyroscope: the thermals come out with
+  the right direction and times, the ground time before takeoff shows as a glide.
+- Source: full-quality INSV (2 x 2880 x 2880 HEVC), rough FFmpeg stitch.
+  The 45 s summary took 3 min 49 s on the RTX 3070 Ti while another render was
+  running. From the LRV proxy the same reel takes under a minute.
+
+## Holiday: eight clips of 12 and 14 August 2025 (8K INSV, no LRV)
+
+```
+insta-roller run work/holiday-src --out work/holiday --mode both --length 30
+```
+
+Eight clips on two days give `day_20250812_30s`, `day_20250814_30s` and
+`trip_180s`. Films are 1920 x 1080 with the original sound. Rendering 8K
+sources runs at roughly a quarter of real time.
+
+## Media SDK stitcher (added the same day)
+
+Built with Visual Studio 2022 Build Tools; `insta-stitcher.exe` stitches only
+the spans a reel uses.
+
+- 5.7K flight, no stabilisation, native 5760 x 2880: about 15 s per second of
+  footage (6 s span in 90 s). The 45 s summary reel: 13 min 15 s.
+- 8K holiday clip, direction lock, 3840 x 1920 output: about 17-22 s per
+  second of footage. Native 7680 x 3840: about 26 s per second.
+- No seam and no doubled objects; the mount calibration of the proxy fits
+  the SDK picture unchanged.
+
+## People from Immich
+
+`faces-export` against Immich 3.4.2 (API path) exported 50 face vectors for
+each of four people. On three clips from 2 August 2025 the analysis found two
+of them and framed them as `companion` shots.
+
+## Standalone app
+
+`python -m app` (or `insta-roller.bat`): one process with the queue, the job
+runner and the browser UI. A job for the 23 June flight (LRV + IGC, review
+on) reached the scene review by itself and, after "Renderuj", finished with
+two reels listed on the results screen.

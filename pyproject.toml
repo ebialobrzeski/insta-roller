@@ -7,17 +7,23 @@ name = "insta-roller"
 version = "0.1.0"
 description = "Automatic reframing and editing of Insta360 X5 footage"
 requires-python = ">=3.11"
-dependencies = ["pydantic>=2.6", "pyyaml>=6"]
+dependencies = ["pydantic>=2.6", "pyyaml>=6", "numpy>=1.26", "pillow>=10.1"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 ffmpeg = ["imageio-ffmpeg>=0.5"]
+faces = ["insightface", "onnxruntime"]
+app = ["fastapi", "uvicorn", "httpx"]
 
 [project.scripts]
 insta-roller = "core.cli:main"
+insta-roller-app = "app.__main__:main"
 
 [tool.setuptools]
-packages = ["core"]
+packages = ["core", "app"]
+
+[tool.setuptools.package-data]
+app = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
