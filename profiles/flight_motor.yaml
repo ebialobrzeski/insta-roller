@@ -12,7 +12,8 @@ mount: motorglider_canopy
 # theme file: turn it on for a job with `--enable landing`.
 themes: [takeoff_tow, thermal, glide_views, landing, flight_summary]
 encoder: auto            # auto = h264_nvenc when available, else libx264
-transition_s: 1.5        # camera move between presets inside one shot
+transition_s: 1.5        # camera move between presets inside one shot (at least)
+max_turn_dps: 45         # ... and never faster than this: a half turn takes four seconds
 shot_handles_s: 1.5      # spare footage at both ends of exported shots
 # Parts of the frame hidden by the TikTok / Instagram interface (fractions).
 # Framing moves the subject into the free area; the overlay stays inside it.

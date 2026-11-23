@@ -106,6 +106,8 @@ class Profile(Strict):
     themes: list[str]
     encoder: str
     transition_s: float
+    max_turn_dps: float = 60.0          # the camera never turns faster than this between presets
+    max_track_dps: float = 15.0         # ... nor while it follows a person
     shot_handles_s: float = 1.5
     safe_zone: SafeZone = SafeZone()
     overlay: Overlay = Overlay()

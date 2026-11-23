@@ -279,3 +279,24 @@ def test_holiday_day_films_and_trip_film_from_one_analysis():
     assert holiday.levels(None, data)[scenes[0].id] == (0, 0)
     framing = plan_framing(plans[0], profile, mount)
     assert (framing.width, framing.height) == (1920, 1080) and framing.shots[0].keyframes[0].roll == 0
+
+
+def test_camera_never_turns_faster_than_the_limit(mount):
+    quick = frame_shot(["front", "pilot"], 10.0, mount, 1.5)
+    slow = frame_shot(["front", "pilot"], 10.0, mount, 1.5, max_turn_dps=45)
+    assert quick[2].t - quick[1].t == pytest.approx(1.5)
+    assert slow[2].t - slow[1].t == pytest.approx(4.0)                 # half a turn at 45 degrees a second
+    assert abs(slow[2].yaw - slow[1].yaw) / (slow[2].t - slow[1].t) <= 45.01
+
+
+def test_companion_shot_follows_the_face_slowly_and_at_its_height():
+    stick = load_mount("selfie_stick")
+    preset = stick.presets["companion"]
+    attrs = {"yaw_person": 100.0, "pitch_person": -20.0,
+             "track_person": [[10.0, 60.0, -18.0], [14.0, 100.0, -20.0], [18.0, 170.0, -24.0]]}
+    frames = frame_shot(["companion"], 8.0, stick, 2.0, attrs=attrs, start_s=10.0, max_track_dps=10)
+    assert frames[0].yaw == pytest.approx(60.0) and frames[0].pitch == pytest.approx(-18.0 + preset.pitch)
+    for a, b in zip(frames, frames[1:]):
+        assert abs(b.yaw - a.yaw) <= 10 * (b.t - a.t) + 0.01            # it lags rather than whips round
+    assert frames[-1].yaw < 170 and frames[-1].pitch == pytest.approx(-24.0 + preset.pitch)
+    assert load_theme("holiday_day").max_per_type["holder"] == 2

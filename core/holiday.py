@@ -120,7 +120,7 @@ def analyze(job) -> Scenes:
     profile, cfg = job.profile, job.profile.holiday
     recordings = job.recordings
     fp = fingerprint(*[f for r in recordings for f in r.files], cfg.model_dump_json(),
-                     {k: v.base_score for k, v in profile.scene_types.items()}, sorted(profile.people), 1)
+                     {k: v.base_score for k, v in profile.scene_types.items()}, sorted(profile.people), 2)
     path = job.path("scenes.json")
     if path.exists() and not job.args.force:
         cached = contracts.read(path, Scenes)
@@ -238,25 +238,40 @@ def annotate_people(job, recordings: dict[str, Recording], scenes: list[Scene]) 
             rec = recordings[scene.recording].best()
             seen = faces.scan((v for t in times for v in _views(rec, job.mount, t, level, job.work, job.log)), people)
             middle = times[len(times) // 2]
-            target = faces.choose_target([s for s in seen if s.t == middle], weights, shown)
-            target = target or faces.choose_target(seen, weights, shown)
+
+            def near_holder(sighting) -> bool:
+                return abs((sighting.yaw - scene.attrs["yaw_holder"] + 180) % 360 - 180) < 45
+
+            # The person with the stick is the largest face on the side the holder stands.
+            close = [s for s in seen if s.name and near_holder(s)]
+            holder = max(close, key=lambda s: s.size).name if close else None
+            others = [s for s in seen if s.name != holder]
+            target = faces.choose_target([s for s in others if s.t == middle], weights, shown)
+            target = target or faces.choose_target(others, weights, shown)
+            kind = "person"
+            if target is None:                  # nobody else: a shot of the holder, of which a film takes few
+                target = faces.choose_target([s for s in seen if s.name == holder], weights, shown)
+                kind = "holder"
             if target is None:
                 continue
             scene.score = round(min(scene.score + faces.scene_bonus(seen, job.profile.person_bonus, weights), 1.0), 3)
             scene.attrs["people"] = list(target.names)
-            scene.attrs["yaw_person"] = round(float(target.yaw), 1)
             track = []
             for t in times:                     # where the same people are at each moment
-                yaws = [np.radians(s.yaw) for s in seen if s.t == t and s.name in target.names]
-                if yaws:
-                    track.append([t, round(float(np.degrees(np.arctan2(np.sin(yaws).mean(), np.cos(yaws).mean()))), 1)])
+                now = [s for s in seen if s.t == t and s.name in target.names]
+                if now:
+                    yaws = np.radians([s.yaw for s in now])
+                    track.append([t, round(float(np.degrees(np.arctan2(np.sin(yaws).mean(), np.cos(yaws).mean()))), 1),
+                                  round(float(np.mean([s.pitch for s in now])), 1)])
             if len(track) < len(times):         # seen only in passing: a better score, but no framing on them
-                del scene.attrs["yaw_person"]
                 continue
+            mid = track[len(track) // 2]
+            scene.attrs[f"yaw_{kind}"], scene.attrs[f"pitch_{kind}"] = mid[1], mid[2]
             if len(track) > 1:
-                scene.attrs["track_person"] = track
-            if scene.type in ("view", "walk") and "companion" in types:
-                scene.type = "companion"
+                scene.attrs[f"track_{kind}"] = track
+            wanted = "companion" if kind == "person" else "holder"
+            if scene.type in ("view", "walk") and wanted in types:
+                scene.type = wanted
             length = min(span, types[scene.type].max_shot_s)
             shown = faces.screen_time(shown, target, length)
     except Exception as error:          # recognition must never stop the films

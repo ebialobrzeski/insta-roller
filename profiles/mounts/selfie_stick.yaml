@@ -14,6 +14,8 @@ calibration:
 
 presets:
   view:      {yaw: 0, pitch: 0,   fov: 115, track: travel, safe_zone: false}
-  holder:    {yaw: 0, pitch: -10, fov: 105, track: holder, safe_zone: false}
-  companion: {yaw: 0, pitch: -5,  fov: 95,  track: person, safe_zone: false}
-  panorama:  {yaw: -40, pitch: 0, fov: 110, track: travel, pan_dps: 8, safe_zone: false}
+  # holder and companion aim a little below the face that was found, so the
+  # whole head and the shoulders are in the frame.
+  holder:    {yaw: 0, pitch: -8, fov: 112, track: holder, safe_zone: false}
+  companion: {yaw: 0, pitch: -8, fov: 108, track: person, safe_zone: false}
+  panorama:  {yaw: -30, pitch: 0, fov: 110, track: travel, pan_dps: 6, safe_zone: false}

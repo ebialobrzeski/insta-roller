@@ -114,7 +114,7 @@ def plan_reel(scenes: list[Scene], profile: Profile, theme: Theme, mount: Mount,
             start = min(max(start, shots[-1].start_s + shots[-1].duration_s), s.end_s - length)
         shots.append(Shot(index=0, scene_id=s.id, type=s.type, start_s=round(max(start, s.start_s), 2),
                           duration_s=length, framing=framing(s), recording=s.recording, speed=speed,
-                          attrs={k: v for k, v in s.attrs.items() if k.startswith(("yaw_", "track_"))}))
+                          attrs={k: v for k, v in s.attrs.items() if k.startswith(("yaw_", "pitch_", "track_"))}))
     if ending:
         scene, start, length = ending
         shots.append(Shot(index=0, scene_id=scene.id, type="ending", start_s=round(start, 2),

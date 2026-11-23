@@ -2,5 +2,7 @@
 name: holiday_day
 title: Dzień
 include: [view, walk, holder, companion, panorama]
+# Shots of the person holding the camera: a few per film, not most of it.
+max_per_type: {holder: 2}
 target_length_s: 60
 min_material_s: 8

@@ -9,6 +9,8 @@ mount: selfie_stick
 themes: [holiday_day]
 encoder: auto
 transition_s: 2.0
+max_turn_dps: 30             # the camera never turns faster than this between framings
+max_track_dps: 10            # ... nor while it follows a person
 shot_handles_s: 1.5
 # People to recognise (names as in Immich) and their share of screen time.
 # Needs `insta-roller faces-export`; without it the films are made without people framing.
