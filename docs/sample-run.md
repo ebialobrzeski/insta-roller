@@ -141,3 +141,16 @@ of them and framed them as `companion` shots.
 runner and the browser UI. A job for the 23 June flight (LRV + IGC, review
 on) reached the scene review by itself and, after "Renderuj", finished with
 two reels listed on the results screen.
+
+## Whole cruise, day films (23 November 2026, evening)
+
+88 clips (8K INSV, no LRV) on eight days, people from Immich, Media SDK
+stitch with direction lock at 3840 x 1920.
+
+- Analysis with people recognition: about 1 h 10 min (125 scenes, three
+  moments each). 58 scenes became `companion` shots.
+- Render: eight day films in about 2 h 35 min, roughly 20 min per 60 s film.
+- Two days gave less than 60 s (42 s and 49 s) for lack of usable footage.
+- Seen on contact sheets: level and stable; known people are found, but the
+  frame often cuts the top of a head because only the direction of a face is
+  used, not its height, and the holder dominates the films.
