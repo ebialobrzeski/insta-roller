@@ -23,3 +23,22 @@ presets:
   # Along the wing and down at the ground, pilot out of frame.
   wing_left:  {yaw: -100, pitch: 8,  fov: 115}
   wing_right: {yaw: 100,  pitch: 8,  fov: 115}
+  # Moves inside one framing (fov_end = a slow zoom while the view is held).
+  front_in:     {yaw: 0,   pitch: 0,  fov: 120, fov_end: 95,  horizon: locked}   # push in on the horizon
+  front_out:    {yaw: 0,   pitch: 0,  fov: 95,  fov_end: 125, horizon: locked}   # pull back: the view opens up
+  pilot_close:  {yaw: 180, pitch: 0,  fov: 100, fov_end: 78,  exposure_ev: 0.25} # push in on the pilot
+  # Down at the ground beside the fuselage; followed by wing_* the view rises to the horizon.
+  ground_left:  {yaw: -95, pitch: -40, fov: 105}
+  ground_right: {yaw: 95,  pitch: -40, fov: 105}
+  # Unusual views for the "Zaskocz mnie" reel.
+  # planet: straight down, everything wrapped into a ball that slowly turns;
+  # followed by planet_front the ball unrolls into the view ahead.
+  planet:       {yaw: 0,   pitch: -90, fov: 300, projection: planet,  safe_zone: false, pan_dps: 12}
+  planet_front: {yaw: 0,   pitch: 0,   fov: 150, projection: planet,  safe_zone: false}
+  # bubble: round ultra-wide view, pilot with both wings / the whole canopy ahead.
+  bubble:       {yaw: 180, pitch: 10,  fov: 220, projection: fisheye, safe_zone: false, exposure_ev: 0.15}
+  bubble_front: {yaw: 0,   pitch: 0,   fov: 220, projection: fisheye, safe_zone: false}
+  # around: a slow look round with the horizon held level while the glider banks.
+  around:       {yaw: 0,   pitch: 5,   fov: 125, horizon: locked, pan_dps: 30}
+  # barrel: the picture rolls once all the way over.
+  barrel:       {yaw: 0,   pitch: 0,   fov: 125, roll_turns: 1}

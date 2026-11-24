@@ -203,6 +203,17 @@ def plan(job, scenes: Scenes) -> tuple[list[ReelPlan], list[ReelEntry]]:
         trip = ReelPlan(theme="trip", title="Wyjazd", target_length_s=target,
                         length_s=round(sum(s.duration_s / s.speed for s in shots), 2), shots=shots)
         add("trip", target, trip, "no usable material")
+    everything = [s for day in sorted(by_day) for s in by_day[day]]
+    for extra in job.themes[1:]:                # further themes: one film each of the whole trip
+        if not extra.enabled:
+            continue
+        target = extra.target_length_s or profile.target_length_s
+        have = material_s(everything, profile, extra, none, none)
+        if have < max(extra.min_material_s, 2.0):
+            add(extra.name, target, None, f"not enough material ({have:.0f}s of {extra.min_material_s:g}s needed)")
+        else:
+            add(extra.name, target, plan_reel(everything, profile, extra, mount, min(target, have)))
+            plans[-1].title = extra.title
     return plans, entries
 
 

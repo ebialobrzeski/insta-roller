@@ -1,0 +1,7 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {"name": "insta-roller-ui", "runtimeExecutable": ".venv/Scripts/python.exe",
+     "runtimeArgs": ["-m", "app", "--no-browser", "--port", "8765", "--data", "work/ui-root"], "port": 8765}
+  ]
+}

@@ -363,3 +363,52 @@ dialog::backdrop { background: var(--shade); }
 .entry { gap: 14px; }
 .entry .h3 { white-space: nowrap; }
 .icon.solid { fill: currentColor; stroke: none; width: 12px; height: 12px; }
+
+/* wizard: one length field per chosen film */
+.lengths { display: grid; gap: 8px; max-width: 340px; }
+.length { display: grid; grid-template-columns: 1fr 84px auto; align-items: center; gap: 10px; font-size: 14px; }
+.length input { width: 100%; text-align: right; }
+
+/* wizard: model and reasoning budget of the OpenRouter engine */
+.ai-more { display: grid; grid-template-columns: 1fr 180px; gap: 12px; margin: 10px 0 4px; align-items: start; }
+@media (max-width: 720px) { .ai-more { grid-template-columns: 1fr; } }
+
+/* review: previews of the views of a shot */
+.thumb video { width: 100%; height: 100%; object-fit: cover; display: block; background: #000; }
+.thumb.loading { background: linear-gradient(100deg, var(--raise) 30%, var(--tint) 50%, var(--raise) 70%) 0 0 / 200% 100%; animation: wait 1.2s linear infinite; }
+@keyframes wait { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .thumb.loading { animation: none; } }
+.chip.kadr { padding: 2px 4px 2px 2px; gap: 6px; width: 100%; }
+.chip.kadr.on { border-color: var(--accent); }
+.chip.kadr .see { all: unset; cursor: pointer; flex: 0 0 26px; height: 34px; border-radius: 4px; overflow: hidden; background: var(--line); display: block; }
+.chip.kadr .see img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.chip.kadr .see i { display: block; width: 100%; height: 100%; }
+.chip.kadr .name { all: unset; cursor: pointer; flex: 1; min-width: 0; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-decoration: underline dotted; text-underline-offset: 3px; }
+.chip.kadr .see:focus-visible, .chip.kadr .name:focus-visible { outline: 2px solid var(--accent); }
+.chip.kadr .x { color: var(--faint); }
+dialog.picker { width: min(920px, calc(100vw - 32px)); max-height: calc(100vh - 48px); padding: 24px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); color: var(--ink); }
+.kadry { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 12px; }
+.kadry button { all: unset; cursor: pointer; display: grid; gap: 6px; font-size: 13px; padding: 6px; border-radius: 8px; border: 1px solid transparent; }
+.kadry button:hover { background: var(--raise); }
+.kadry button.on { border-color: var(--accent); }
+.kadry button:focus-visible { outline: 2px solid var(--accent); }
+.kadry .thumb { display: block; }
+
+/* overview: the read-out of the flight chart */
+.chart svg { cursor: crosshair; touch-action: pan-y; }
+.chart svg:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 4px; }
+.chart .cursor { stroke: var(--ink); stroke-width: 1; opacity: .55; pointer-events: none; }
+.chart .cursor-dot { fill: var(--accent); stroke: var(--bg); stroke-width: 2; pointer-events: none; }
+.readout { position: absolute; top: 0; z-index: 2; display: flex; gap: 12px; align-items: stretch; padding: 10px 12px; border-radius: 8px;
+  background: var(--bg); border: 1px solid var(--line); box-shadow: 0 6px 24px rgba(0, 0, 0, .28); pointer-events: none; font-size: 13px; white-space: nowrap; }
+.readout[hidden] { display: none; }
+.readout img { width: 54px; border-radius: 4px; object-fit: cover; display: block; }
+.readout .when { font: 12px var(--mono); color: var(--muted); display: flex; gap: 10px; align-items: baseline; }
+.readout .when b { font: 500 14px var(--sans); color: var(--ink); }
+.readout dl { display: grid; grid-template-columns: auto auto; gap: 2px 14px; margin: 6px 0; }
+.readout dt { color: var(--muted); }
+.readout dd { margin: 0; text-align: right; font-family: var(--mono); }
+.readout dd.up { color: var(--good); }
+.readout dd.down { color: var(--bad); }
+.readout .in { color: var(--accent-ink); }
+.readout .in.none { color: var(--faint); }

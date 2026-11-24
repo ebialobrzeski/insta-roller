@@ -40,9 +40,11 @@ def canvas_size(cfg: Overlay, frame_width: int) -> tuple[int, int]:
 
 
 def position(cfg: Overlay, frame: tuple[int, int], zone: SafeZone) -> tuple[int, int]:
-    """Bottom-left corner of the free area."""
+    """Bottom-left corner of the free area, or lower when the profile says so (overlay.bottom)."""
     w, h = canvas_size(cfg, frame[0])
     margin = int(frame[0] * 0.03)
+    if cfg.bottom is not None:
+        return int(frame[0] * zone.left) + margin, max(int(frame[1] * (1 - cfg.bottom)) - h, 0)
     return int(frame[0] * zone.left) + margin, int(frame[1] * (1 - zone.bottom)) - h - margin
 
 

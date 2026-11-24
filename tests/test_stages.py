@@ -1,6 +1,7 @@
 """Stages 2, 3 and 5: themes and several reels, camera data and sync, holiday profile."""
 from __future__ import annotations
 
+import json
 import math
 import os
 import struct
@@ -49,11 +50,54 @@ def _themes(profile, **enabled):
 
 
 # --- stage 2 ---------------------------------------------------------------
+def test_surprise_reel_varies_its_framing_and_speeds_up_the_launch(scenes, profile, mount):
+    plans, _ = plan_reels(scenes, profile, _themes(profile), mount)
+    reel = next(p for p in plans if p.theme == "surprise")
+    thermals = [tuple(s.framing) for s in reel.shots if s.type == "thermal"]
+    assert len(thermals) > 1 and len(set(thermals)) == len(thermals)    # each thermal looks different
+    assert all(s.speed == 6 for s in reel.shots if s.type == "tow")
+    assert abs(reel.length_s - sum(s.duration_s / s.speed for s in reel.shots)) < 0.05
+    framed = plan_framing(reel, profile, mount)
+    assert {s.projection for s in framed.shots} >= {"planet", "fisheye"}
+
+
+def test_zoom_and_roll_happen_while_a_preset_is_held(mount):
+    zoom = frame_shot(["pilot_close"], 6.0, mount, 1.5)
+    assert zoom[0].fov > zoom[-1].fov and zoom[0].yaw == zoom[-1].yaw      # a push in, the camera does not turn
+    roll = frame_shot(["barrel"], 6.0, mount, 1.5)
+    assert roll[-1].roll - roll[0].roll == 360                             # once over, ends upright
+    reveal = frame_shot(["planet", "planet_front"], 8.0, mount, 1.5)
+    assert reveal[0].pitch == -90 and reveal[-1].pitch == 0 and reveal[0].fov > reveal[-1].fov
+
+
+def test_holiday_surprise_is_one_more_film_of_the_whole_trip():
+    profile = load_profile("holiday")
+    mount = load_mount(profile.mount)
+    scenes = [Scene(id=f"{d}_{i}", type=t, start_s=5, end_s=45, score=0.6, recording=f"{d}_{i}", attrs={"day": d})
+              for d in ("20250101", "20250102") for i, t in enumerate(["view", "view", "panorama", "walk"])]
+    job = SimpleNamespace(profile=profile, mount=mount, themes=[load_theme(n) for n in profile.themes],
+                          length=None, args=SimpleNamespace(mode="day"))
+    plans, entries = holiday.plan(job, SimpleNamespace(scenes=scenes))
+    extra = next(p for p in plans if p.theme == "holiday_surprise")
+    assert extra.title == "Zaskocz mnie" and {s.scene_id[:8] for s in extra.shots} == {"20250101", "20250102"}
+    assert all(s.speed == 8 for s in extra.shots if s.type == "walk")
+    assert ["planet", "planet_view"] in [s.framing for s in extra.shots]
+    assert sum(p.theme.startswith("day_") for p in plans) == 2
+
+
+def test_a_shot_cannot_mix_projections(profile, mount):
+    reel = ReelPlan(theme="x", target_length_s=6, length_s=6, shots=[
+        Shot(index=1, scene_id="a", type="thermal", start_s=0, duration_s=6, framing=["front", "planet"])])
+    with pytest.raises(ValueError, match="projections"):
+        plan_framing(reel, profile, mount)
+
+
 def test_several_reels_share_no_scene_and_landing_is_off(scenes, profile, mount):
     plans, entries = plan_reels(scenes, profile, _themes(profile), mount)
     by_theme = {p.theme: p for p in plans}
     assert {"takeoff_tow", "thermal", "glide_views", "flight_summary"} <= set(by_theme)
-    own = [s.scene_id for p in plans if p.theme != "flight_summary" for s in p.shots]
+    borrowers = {t.name for t in _themes(profile) if t.borrows}
+    own = [s.scene_id for p in plans if p.theme not in borrowers for s in p.shots]
     assert len(own) == len(set(own))                                 # a scene is in one reel only
     assert not any(s.type in ("circuit", "landing") for p in plans for s in p.shots)
     assert by_theme["flight_summary"].shots[-1].type == "ending"
@@ -110,7 +154,7 @@ def test_locked_horizon_counters_the_bank(profile, mount):
 def test_overlay_frames_cover_the_shot(profile):
     tele = Telemetry(source="t", samples=[TelemetrySample(t=t, speed_kmh=80 + t, alt_m=900 + t, vario_ms=1.5,
                                                           bank_deg=0) for t in range(0, 10)])
-    cfg = profile.overlay.model_copy(update={"enabled": True})
+    cfg = profile.overlay.model_copy(update={"enabled": True, "bottom": None})    # the default place: inside the safe zone
     w, h = overlay.canvas_size(cfg, 1080)
     data = overlay.frames_rgba(cfg, tele, 1080, 2.0, 1.0)
     assert len(data) == w * h * 4 * int(cfg.fps) and any(data[3::4][:20000])
@@ -300,3 +344,133 @@ def test_companion_shot_follows_the_face_slowly_and_at_its_height():
         assert abs(b.yaw - a.yaw) <= 10 * (b.t - a.t) + 0.01            # it lags rather than whips round
     assert frames[-1].yaw < 170 and frames[-1].pitch == pytest.approx(-24.0 + preset.pitch)
     assert load_theme("holiday_day").max_per_type["holder"] == 2
+
+
+# --- AI framing ---------------------------------------------------------------
+def _ai_reel(profile, mount, scenes):
+    theme = load_theme("thermal")
+    plans, _ = plan_reels(scenes, profile, [theme], mount)
+    return theme, plans[0]
+
+
+def test_ai_candidates_are_ordinary_views_of_the_same_scene_type(scenes, profile, mount):
+    from core import aiframe
+    theme, reel = _ai_reel(profile, mount, scenes)
+    by_id = {s.id: s for s in scenes}
+    themes = [load_theme(n) for n in profile.themes]
+    shot = reel.shots[0]
+    options = aiframe.candidates(shot, by_id[shot.scene_id], profile, theme, mount, themes)
+    assert options[0] == shot.framing and len(options) > 3
+    assert all(mount.presets[n].projection == "flat" for names in options for n in names)   # no planet outside "surprise"
+
+
+def test_ai_local_choice_prefers_the_best_score_but_not_the_same_view_every_time():
+    from core import aiframe
+    options = [["a"], ["b"], ["a", "b"]]
+    score = {"a": 0.9, "b": 0.5}
+    assert aiframe.pick(options, score, {}, None, 0.1) == ["a"]
+    assert aiframe.pick(options, score, {("a",): 1}, ("a",), 0.15) == ["a", "b"]
+    good, bad = np.eye(4)[:1], np.eye(4)[1:2]
+    scores = aiframe.clip_scores(np.eye(4)[[0, 1]], good, bad)
+    assert scores[0] > 0.99 and scores[1] < 0.01
+
+
+def test_ai_openrouter_aims_the_camera_itself_and_bad_answers_are_ignored(scenes, profile, mount, tmp_path, monkeypatch):
+    from core import aiframe
+    theme, reel = _ai_reel(profile, mount, scenes)
+    profile = profile.model_copy(deep=True)
+    profile.ai_framing.engine = "openrouter"
+    profile.ai_framing.accents = 1
+    profile.ai_framing.person_shots = 1
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test")
+    from PIL import Image
+
+    def stills(shot, presets, ctx, folder):
+        Image.new("RGB", (32, 32), "blue").save(folder / "x.jpg")
+        return {name: folder / "x.jpg" for name in presets}
+    monkeypatch.setattr(aiframe, "_stills", stills)
+    monkeypatch.setattr(aiframe, "_pano", lambda shot, ctx, folder: stills(shot, ["p"], ctx, folder)["p"])
+    monkeypatch.setattr(aiframe, "_own_stills", lambda shot, own, ctx, folder: stills(shot, list(own), ctx, folder))
+    by_id = {s.id: s for s in scenes}
+    themes = [load_theme(n) for n in profile.themes]
+    names, extra = aiframe.views(reel.shots[0], by_id[reel.shots[0].scene_id], profile, theme, mount, themes)
+    assert {"planet", "bubble"} <= extra and "pilot_close" in names      # showpieces of "surprise" are accents here
+    letter = {n: chr(65 + i) for i, n in enumerate(names)}
+    seen = []
+
+    def post(body):
+        seen.append(body)
+        parts = body["messages"][0]["content"]
+        if len(seen) == 2:                      # the review round: the model sees its own view and aims it again
+            assert "REVIEW" in parts[-3]["text"] and "ai1a" in parts[-2]["text"] and parts[-1]["type"] == "image_url"
+            return json.dumps({"shots": [
+                {"shot": 1, "seen": "airfield below the left wing", "why": "ground, then up along the wing",
+                 "views": [{"yaw": -95, "pitch": -70, "fov": 500, "zoom_to": 120, "pan": 9000, "horizon": "level"}, letter["wing_left"]]},
+                {"shot": 2, "views": [letter["pilot_close"]], "why": "the pilot"}]})
+        assert "360" in parts[0]["text"] and "PANORAMA" in parts[0]["text"] and "[accent]" in parts[1]["text"]
+        assert sum(part["type"] == "image_url" for part in parts) == 2 * len(reel.shots)     # panorama + ready views
+        return json.dumps({"shots": [
+            {"shot": 1, "seen": "airfield below the left wing", "why": "ground, then up along the wing",
+             "views": [{"yaw": -60, "pitch": -20, "fov": 100}, letter["wing_left"]]},
+            {"shot": 2, "views": [letter["pilot_close"]], "why": "the pilot"},
+            {"shot": 9, "views": ["A"]}, {"shot": "x"}]})
+    ctx = SimpleNamespace(work=tmp_path)
+    out = aiframe.apply(reel, scenes, profile, mount, theme, ctx, post=post)
+    first = out.shots[0]
+    assert first.framing == ["ai1a", "wing_left"] and "airfield" in first.attrs["ai"]
+    own = first.attrs["views"]["ai1a"]
+    assert own["yaw"] == -95 and own["pitch"] == -70 and own["fov"] == 140 and own["fov_end"] == 120    # clamped to a sane lens
+    assert abs(own["pan_dps"]) <= profile.max_turn_dps and own["horizon"] == "locked"
+    assert out.shots[1].framing == ["pilot_close"]
+    framed = plan_framing(out, profile, mount)
+    assert framed.shots[0].keyframes[0].pitch < -50                  # the model's own view is what gets framed
+    # Showpieces and shots of the pilot are rationed; a path may not change projection.
+    item = {"shot": reel.shots[0], "names": names, "extra": extra, "stills": {}, "pano": None}
+    batch = [{**item, "shot": reel.shots[0].model_copy(update={"index": i})} for i in (1, 2, 3, 4, 5)]
+    reply = json.dumps({"shots": [
+        {"shot": 1, "views": [{"yaw": 0, "pitch": -90, "fov": 300, "projection": "planet"}]},
+        {"shot": 2, "views": [letter["bubble"]]},
+        {"shot": 3, "views": [letter["planet"], letter["front_in"]]},
+        {"shot": 4, "views": [{"yaw": 180, "pitch": 0, "fov": 90}]},
+        {"shot": 5, "views": [letter["wing_left"], {"yaw": 175, "pitch": 5, "fov": 100}]}]})
+    found = aiframe.parse_reply(reply, batch, profile, mount, False, 1, 1)
+    assert sorted(found) == [1, 4, 5] and found[5][0] == ["wing_left"]      # the second pilot view is dropped from its path
+    aiframe.apply(reel, scenes, profile, mount, theme, ctx, post=post)
+    assert len(seen) == 2                                           # first answer + review; cached after that
+
+
+def test_ai_views_are_described_for_the_model(mount):
+    from core import aiframe
+    assert "zooms in" in aiframe.describe("pilot_close", mount, "flight") and "pilot" in aiframe.describe("pilot_close", mount, "flight")
+    assert "small-planet" in aiframe.describe("planet", mount, "flight") and "straight down" in aiframe.describe("planet", mount, "flight")
+    assert "rolls" in aiframe.describe("barrel", mount, "flight")
+    holiday_mount = load_mount("selfie_stick")
+    assert "person holding the camera" in aiframe.describe("holder", holiday_mount, "holiday")
+    short = Shot(index=1, scene_id="a", type="glide", start_s=0, duration_s=4, framing=["front"])
+    assert aiframe.valid_sequence(["front"], short, mount.presets)
+    assert not aiframe.valid_sequence(["front", "pilot"], short, mount.presets)     # 2 s per view is too little
+    assert aiframe.shows_person(mount.presets["pilot_wide"], mount) and not aiframe.shows_person(mount.presets["wing_left"], mount)
+
+
+def test_ai_engine_that_cannot_run_keeps_the_theme_framing(scenes, profile, mount, tmp_path, monkeypatch):
+    from core import aiframe
+    theme, reel = _ai_reel(profile, mount, scenes)
+    profile = profile.model_copy(deep=True)
+    profile.ai_framing.engine = "openrouter"
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(aiframe, "PROFILES_DIR", tmp_path / "profiles")
+    monkeypatch.setattr(aiframe, "_stills", lambda shot, presets, ctx, folder: {})
+    monkeypatch.setattr(aiframe, "_pano", lambda shot, ctx, folder: None)
+    said = []
+    out = aiframe.apply(reel, scenes, profile, mount, theme, SimpleNamespace(work=tmp_path), progress=said.append)
+    assert out == reel and "OPENROUTER_API_KEY" in said[0]
+
+
+def test_overlay_can_sit_lower_than_the_safe_zone():
+    from core.config import Overlay
+    zone = SafeZone(top=0.08, bottom=0.20, left=0.0, right=0.12)
+    frame = (1080, 1920)
+    high = overlay.position(Overlay(enabled=True), frame, zone)
+    low = overlay.position(Overlay(enabled=True, bottom=0.07), frame, zone)
+    assert low[0] == high[0] and low[1] > high[1] + 200
+    assert low[1] + overlay.canvas_size(Overlay(enabled=True), 1080)[1] <= 1920 * 0.93 + 1

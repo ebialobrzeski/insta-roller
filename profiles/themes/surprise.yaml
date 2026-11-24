@@ -1,0 +1,18 @@
+# Zaskocz mnie: the flight in views a normal reel never uses: the surroundings
+# wrapped into a small planet that unrolls, round ultra-wide views, a slow look
+# round, a barrel roll of the picture and the launch sped up. Borrows scenes from the other reels.
+name: surprise
+title: Zaskocz mnie
+borrows: true
+include: [takeoff, tow, climb, thermal, glide]
+max_per_type: {tow: 1, climb: 1, thermal: 3, glide: 2}
+# The shots of one type take these framings in turn.
+variants:
+  takeoff: [[bubble]]
+  tow:     [[bubble_front]]
+  climb:   [[bubble_front]]
+  thermal: [[planet, planet_front], [around], [bubble]]   # the planet unrolls into the view ahead
+  glide:   [[bubble_front], [barrel]]
+speed: {tow: 6, climb: 6}       # the launch as a time-lapse
+target_length_s: 35
+min_material_s: 12

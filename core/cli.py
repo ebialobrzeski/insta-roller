@@ -45,6 +45,12 @@ class Job:
         self.profile = load_profile(name)
         if args.overlay is not None:
             self.profile.overlay.enabled = args.overlay
+        if getattr(args, "ai_framing", None):
+            self.profile.ai_framing.engine = args.ai_framing
+        if getattr(args, "ai_model", None):
+            self.profile.ai_framing.model = args.ai_model
+        if getattr(args, "ai_reasoning", None) is not None:
+            self.profile.ai_framing.reasoning_tokens = max(args.ai_reasoning, 0)
         self.mount = load_mount(args.mount or self.profile.mount)
         self.length = args.length
         self._recordings: list[Recording] | None = None
@@ -55,7 +61,10 @@ class Job:
     def themes(self) -> list[Theme]:
         names = self.args.themes.split(",") if self.args.themes else self.profile.themes
         themes = [load_theme(n.strip()) for n in names if n.strip()]
+        lengths = dict(item.split("=", 1) for item in (getattr(self.args, "lengths", None) or "").split(",") if "=" in item)
         for theme in themes:
+            if theme.name in lengths:               # this job's own length for the reel
+                theme.target_length_s = float(lengths[theme.name])
             if theme.name in (self.args.enable or "").split(","):
                 theme.enabled = True
             if theme.name in (self.args.disable or "").split(","):
@@ -273,6 +282,8 @@ def step_plan(job: Job) -> list[FramingPlan]:
         calibration = job.mount.calibration["sdk"]        # the Media SDK stitch will be the source
 
     framings = []
+    ai_ctx = job.context(scenes) if job.profile.ai_framing.engine != "off" else None
+    themes = {t.name: t for t in job.themes}
     for reel, entry in zip(plans, [e for e in entries if e.status == "planned"]):
         reel_path = job.path(f"reel_plan_{entry.tag}.json")
         framing_path = job.path(f"framing_plan_{entry.tag}.json")
@@ -282,6 +293,10 @@ def step_plan(job: Job) -> list[FramingPlan]:
             if old.edited:
                 reel = old
                 entry.length_s, entry.shots = reel.length_s, len(reel.shots)
+        if ai_ctx is not None and not reel.edited:      # a model chooses among the possible framings
+            from . import aiframe
+            theme = themes.get(reel.theme) or (job.themes[0] if job.profile.kind != "flight" else None)
+            reel = aiframe.apply(reel, scenes.scenes, job.profile, job.mount, theme, ai_ctx)
         framing = plan_framing(reel, job.profile, job.mount, tele, calibration)
         # An unchanged reel plan keeps its framing plan, so manual edits survive.
         if framing_path.exists() and not job.args.force:
@@ -407,9 +422,17 @@ def main(argv: list[str] | None = None) -> None:
         p.add_argument("--profile", default="auto", help="auto = flight when the folder holds an IGC file, else holiday")
         p.add_argument("--mount", help="camera mount (default: from the profile)")
         p.add_argument("--themes", help="comma-separated reel themes (default: from the profile)")
+        p.add_argument("--ai-framing", choices=["off", "local", "openrouter"],
+                       help="a model picks the framing of every shot: local = CLIP on this PC, "
+                            "openrouter = a vision model via the OpenRouter API (stills leave the PC; "
+                            "needs OPENROUTER_API_KEY). Default: from the profile")
+        p.add_argument("--ai-model", help="openrouter: the model, e.g. anthropic/claude-sonnet-5.5 (default: from the profile)")
+        p.add_argument("--ai-reasoning", type=int, metavar="TOKENS",
+                       help="openrouter: tokens the model may spend reasoning before it answers; 0 = none")
         p.add_argument("--enable", help="comma-separated themes to switch on, e.g. landing")
         p.add_argument("--disable", help="comma-separated themes to switch off")
         p.add_argument("--length", type=float, help="length of every reel in seconds (default: from theme / profile)")
+        p.add_argument("--lengths", help="length per reel theme in seconds, e.g. thermal=40,surprise=60")
         p.add_argument("--mode", choices=["day", "trip", "both"], default="day",
                        help="holiday: one film per day, one film of the whole trip, or both")
         p.add_argument("--recording", help="recording id when the folder holds several")

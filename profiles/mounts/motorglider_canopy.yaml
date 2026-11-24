@@ -25,3 +25,15 @@ presets:
   back_right:  {yaw: 120,  pitch: 5,   fov: 125}
   wing_left:   {yaw: -100, pitch: 8,   fov: 115}
   wing_right:  {yaw: 100,  pitch: 8,   fov: 115}
+  # Moves inside one framing and unusual views, as in glider_panel (first guesses).
+  front_in:     {yaw: 0,   pitch: 5,   fov: 115, fov_end: 92,  horizon: locked}
+  front_out:    {yaw: 0,   pitch: 5,   fov: 92,  fov_end: 122, horizon: locked}
+  pilot_close:  {yaw: 155, pitch: -15, fov: 100, fov_end: 80,  exposure_ev: 0.2}
+  ground_left:  {yaw: -95, pitch: -40, fov: 105}
+  ground_right: {yaw: 95,  pitch: -40, fov: 105}
+  planet:       {yaw: 0,   pitch: -90, fov: 300, projection: planet,  safe_zone: false, pan_dps: 12}
+  planet_front: {yaw: 0,   pitch: 5,   fov: 150, projection: planet,  safe_zone: false}
+  bubble:       {yaw: 180, pitch: -10, fov: 220, projection: fisheye, safe_zone: false, exposure_ev: 0.15}
+  bubble_front: {yaw: 0,   pitch: 0,   fov: 220, projection: fisheye, safe_zone: false}
+  around:       {yaw: 0,   pitch: 5,   fov: 125, horizon: locked, pan_dps: 30}
+  barrel:       {yaw: 0,   pitch: 5,   fov: 125, roll_turns: 1}

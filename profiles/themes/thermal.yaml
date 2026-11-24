@@ -3,5 +3,13 @@ name: thermal
 title: Komin
 include: [thermal]
 max_per_type: {thermal: 4}
+# Every shot is framed differently: the shots take these in turn.
+variants:
+  thermal:
+    - [ground_inner, wing_inner]    # from the ground below up to the wing
+    - [front_in, wing_inner]
+    - [pilot_close]
+    - [back_outer, pilot]
+    - [wing_inner, back_inner]
 target_length_s: 30
 min_material_s: 15

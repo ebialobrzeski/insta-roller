@@ -14,7 +14,7 @@ let view, meta, w;
 
 function fresh(preset) {
   return {step: 1, preset, listing: null, found: null, checking: false, kind: preset === "lot" ? "flight" : preset === "urlop" ? "holiday" : null,
-          themes: null, overlay: null, mode: "day", length: "", people: null, review: false, shots: preset === "ujecia", films: preset !== "ujecia",
+          themes: null, overlay: null, ai: null, aiModel: "", aiReasoning: "", lengths: {}, mode: "day", length: "", people: null, review: false, shots: preset === "ujecia", films: preset !== "ujecia",
           quality: null, out: "", profile: preset === "wlasne" ? CUSTOM : "auto", mount: "", yaml: "", more: preset === "wlasne"};
 }
 
@@ -35,7 +35,7 @@ function themes() {                             // [{name, title, text, length, 
   return (p ? p.themes : []).map(name => {
     const t = meta.themes.find(x => x.name === name) || {name, enabled: true};
     const [title, text] = THEMES[name] || [t.title || name, ""];
-    return {name, title: t.title || title, text, length: +w.length || t.length || p.length, def: !!t.enabled,
+    return {name, title: t.title || title, text, length: +w.lengths[name] || +w.length || t.length || p.length, usual: t.length || p.length, def: !!t.enabled,
             on: w.themes && name in w.themes ? w.themes[name] : !!t.enabled};
   });
 }
@@ -128,6 +128,18 @@ const pick = (on, title, text, tags, onclick, disabled) => h("button", {class: "
   h("span", {class: "tick"}, icon("check")),
   h("div", {class: "h3", style: "padding-right:28px"}, title), h("p", {class: "muted", style: "margin-top:6px;font-size:14px"}, text),
   tags && h("div", {class: "tags", style: "margin-top:12px"}, tags));
+let aiModels;                                   // undefined = not asked, null = loading, [] = no list
+async function loadModels() {
+  if (aiModels !== undefined || (w.ai || (profile() || {}).ai) !== "openrouter") return;
+  aiModels = null;
+  try { aiModels = (await api("/api/ai/models")).models || []; } catch { aiModels = []; }
+  if (w && w.step === 2) draw();
+}
+function reasoningNote() {
+  const chosen = (aiModels || []).find(m => m.id === (w.aiModel || (profile() || {}).ai_model));
+  if (chosen && !chosen.reasoning) return "Ten model nie ma trybu reasoning: liczba zostanie pominięta.";
+  return "Ile tokenów model może zużyć na zastanowienie się przed odpowiedzią. 0 = bez reasoningu. Więcej = lepiej przemyślany film, ale drożej i dłużej.";
+}
 const toggle = (key, title, text) => h("label", {class: "switch"},
   h("input", {type: "checkbox", checked: !!w[key], onchange: e => { w[key] = e.target.checked; draw(); }}), h("span", {}, title, h("small", {}, text)));
 
@@ -146,7 +158,13 @@ function stepWhat() {
   const overlayOn = w.overlay == null ? !!p.overlay : w.overlay;
   const mine = w.people || p.people || [];
   rows.push(h("div", {class: "row c2"},
-    flight() ? h("div", {class: "cell"}, h("div", {class: "h3"}, "Na obrazie"),
+    flight() ? h("div", {class: "cell"}, h("div", {class: "h3"}, "Długość filmów"),
+        h("p", {class: "muted", style: "font-size:13px;margin:4px 0 10px"}, "W sekundach. Gdy materiału jest mniej, film wyjdzie krótszy."),
+        h("div", {class: "lengths"}, themes().filter(t => t.on).map(t => h("label", {class: "length"}, h("span", {}, t.title),
+          h("input", {type: "number", min: 5, max: 600, step: 5, inputmode: "numeric", "aria-label": `Długość filmu ${t.title} w sekundach`,
+            value: w.lengths[t.name] || "", placeholder: String(Math.round(+w.length || t.usual)),
+            oninput: e => { w.lengths[t.name] = e.target.value; }, onchange: () => draw()}), h("span", {class: "muted"}, "s")))),
+        h("div", {class: "h3", style: "margin-top:20px"}, "Na obrazie"),
         h("label", {class: "switch"}, h("input", {type: "checkbox", checked: overlayOn, onchange: e => { w.overlay = e.target.checked; }}),
           h("span", {}, "Dane lotu na obrazie", h("small", {}, "Prędkość, wysokość i wznoszenie w rogu kadru."))))
       : h("div", {class: "cell"}, h("div", {class: "h3"}, "Długość i osoby"),
@@ -157,6 +175,23 @@ function stepWhat() {
             h("input", {type: "checkbox", checked: mine.includes(name), onchange: e => { const set = new Set(w.people || p.people || []); e.target.checked ? set.add(name) : set.delete(name); w.people = [...set]; }}), name)))
           : h("p", {class: "muted", style: "font-size:14px;margin-top:6px"}, "Lista osób jest pusta. Dodasz je w zakładce „Osoby”.")),
     h("div", {class: "cell"}, h("div", {class: "h3"}, "Zanim powstanie film"),
+      h("label", {class: "field"}, "AI Framing: kto wybiera kadry",
+        h("select", {onchange: e => { w.ai = e.target.value; loadModels(); draw(); }},
+          [["off", "Stałe kadry z tematu"], ["local", "AI na tym komputerze (model lokalny)"], ["openrouter", "AI przez OpenRouter (miniatury klatek wychodzą do internetu)"]]
+            .map(([value, text]) => h("option", {value, selected: value === (w.ai || p.ai || "off")}, text))),
+        h("small", {class: "muted"}, "AI ogląda możliwe kadry każdego ujęcia i wybiera najlepszy. OpenRouter wymaga klucza OPENROUTER_API_KEY w pliku .env.")),
+      (w.ai || p.ai) === "openrouter" && h("div", {class: "ai-more"},
+        h("label", {class: "field"}, "Model",
+          h("input", {type: "text", list: "ai-models", value: w.aiModel, placeholder: p.ai_model || "", autocomplete: "off", spellcheck: "false",
+            oninput: e => { w.aiModel = e.target.value.trim(); }, onchange: () => draw()}),
+          h("datalist", {id: "ai-models"}, (aiModels || []).map(m => h("option", {value: m.id}, `${m.name}${m.reasoning ? " · reasoning" : ""} · $${m.prompt_usd_per_m}/mln tokenów`))),
+          h("small", {class: "muted"}, aiModels === null ? "Wczytuję listę modeli z OpenRouter…"
+            : aiModels.length ? `Zacznij pisać, żeby wybrać z ${aiModels.length} modeli, które przyjmują obrazy. Puste pole: ${p.ai_model}.`
+            : "Nie udało się pobrać listy modeli. Wpisz nazwę ręcznie, np. anthropic/claude-sonnet-5.5.")),
+        h("label", {class: "field"}, "Tokeny na reasoning",
+          h("input", {type: "number", min: 0, max: 200000, step: 1000, inputmode: "numeric", value: w.aiReasoning, placeholder: String(p.ai_reasoning || 0),
+            oninput: e => { w.aiReasoning = e.target.value; }}),
+          h("small", {class: "muted"}, reasoningNote()))),
       toggle("review", "Chcę najpierw przejrzeć ujęcia", "Aplikacja zatrzyma się po wybraniu ujęć. Poprawisz je i dopiero wtedy ruszy render."),
       w.films ? toggle("shots", "Zapisz też osobne ujęcia", "Każde ujęcie dodatkowo jako oddzielny plik, do montażu w telefonie.")
         : toggle("films", "Zrób też gotowy film", "Oprócz osobnych ujęć sklej je w film."))));
@@ -265,10 +300,14 @@ async function submit() {
   const job = await api("/api/jobs", "POST", {folder: w.listing.path, options: {
     out: w.out.trim(), profile: custom ? "auto" : profileName(), profile_yaml: custom ? w.yaml : "", mount: w.mount,
     length: +w.length || null,
+    lengths: flight() ? Object.fromEntries(list.filter(t => t.on && +w.lengths[t.name] >= 5 && +w.lengths[t.name] !== t.usual).map(t => [t.name, +w.lengths[t.name]])) : {},
     enable: flight() ? list.filter(t => t.on && !t.def).map(t => t.name) : [],
     disable: flight() ? list.filter(t => !t.on && t.def).map(t => t.name) : [],
     mode: flight() ? "day" : w.mode, people,
     overlay: w.overlay == null || w.overlay === !!p.overlay ? null : w.overlay,
+    ai_framing: w.ai && w.ai !== (p.ai || "off") ? w.ai : null,
+    ai_model: (w.ai || p.ai) === "openrouter" && w.aiModel && w.aiModel !== p.ai_model ? w.aiModel : "",
+    ai_reasoning: (w.ai || p.ai) === "openrouter" && w.aiReasoning !== "" && +w.aiReasoning !== (p.ai_reasoning || 0) ? +w.aiReasoning : null,
     review: w.review, shots: w.shots, films: w.films, quality: quality().value,
   }});
   toast(job.existing && job.status === "running" ? "Ten film właśnie powstaje, nic nie zmieniłem" : "Zaczynam. Postęp zobaczysz tutaj.");

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 
-from .config import Calibration, Mount, Profile, SafeZone
+from .config import Calibration, Mount, Preset, Profile, SafeZone
 from .contracts import FramedShot, FramingPlan, Keyframe, ReelPlan, Shot, Telemetry
 from .ingest import fingerprint
 
@@ -56,7 +56,7 @@ def frame_shot(presets: list[str], duration_s: float, mount: Mount, transition_s
     aims = [aim(name) for name in presets]
     move = min(transition_s, hold * 0.6)
     if max_turn_dps > 0 and n > 1:                  # a long way round takes longer
-        widest = max(abs((b[0] - a[0] + 180) % 360 - 180) for a, b in zip(aims, aims[1:]))
+        widest = max(max(abs((b[0] - a[0] + 180) % 360 - 180), abs(b[1] - a[1])) for a, b in zip(aims, aims[1:]))
         move = min(max(move, widest / max_turn_dps), hold * 0.85)
 
     frames: list[Keyframe] = []
@@ -88,7 +88,8 @@ def frame_shot(presets: list[str], duration_s: float, mount: Mount, transition_s
                                            ev=p.exposure_ev))
             continue
         yaw += p.pan_dps * (t_out - t_in)
-        frames.append(Keyframe(t=round(t_out, 3), yaw=yaw, pitch=pitch, roll=p.roll, fov=p.fov, ev=p.exposure_ev))
+        frames.append(Keyframe(t=round(t_out, 3), yaw=yaw, pitch=pitch, roll=p.roll + 360.0 * p.roll_turns,
+                               fov=p.fov if p.fov_end is None else p.fov_end, ev=p.exposure_ev))
     return frames
 
 
@@ -146,6 +147,14 @@ def level_horizon(frames: list[Keyframe], locked: list[float], shot: Shot, telem
         t += LEVEL_STEP_S
 
 
+def shot_mount(mount: Mount, shot: Shot) -> Mount:
+    """The mount plus the views made for this shot alone (AI framing: attrs["views"])."""
+    own = shot.attrs.get("views")
+    if not own:
+        return mount
+    return mount.model_copy(update={"presets": {**mount.presets, **{k: Preset.model_validate(v) for k, v in own.items()}}})
+
+
 def plan_framing(reel: ReelPlan, profile: Profile, mount: Mount, telemetry: Telemetry | None = None,
                  calibration: Calibration | None = None) -> FramingPlan:
     """`source` identifies everything the plan was made from; `plan` keeps a
@@ -154,15 +163,21 @@ def plan_framing(reel: ReelPlan, profile: Profile, mount: Mount, telemetry: Tele
     stabilized = bool(calibration and calibration.stabilized)
     shots = []
     for s in reel.shots:
-        frames = frame_shot(s.framing, s.duration_s, mount, profile.transition_s * s.speed, profile.safe_zone,
+        own = shot_mount(mount, s)
+        frames = frame_shot(s.framing, s.duration_s, own, profile.transition_s * s.speed, profile.safe_zone,
                             (out.width, out.height), s.attrs, s.start_s,
                             profile.max_turn_dps / s.speed, profile.max_track_dps / s.speed)
-        locked = [1.0 if mount.presets[name].horizon == "locked" else 0.0 for name in s.framing for _ in (0, 1)]
+        locked = [1.0 if own.presets[name].horizon == "locked" else 0.0 for name in s.framing for _ in (0, 1)]
         needs = any(w == (0.0 if stabilized else 1.0) for w in locked)
         if telemetry and telemetry.samples and needs:
             frames = level_horizon(frames, locked, s, telemetry, stabilized)
+        projections = {own.presets[name].projection for name in s.framing}
+        if len(projections) > 1:                # the projection cannot change inside a shot
+            raise ValueError(f"shot {s.index} ({s.scene_id}) mixes projections {sorted(projections)}: "
+                             f"presets {s.framing} must share one")
         shots.append(FramedShot(index=s.index, scene_id=s.scene_id, start_s=s.start_s, duration_s=s.duration_s,
-                                keyframes=frames, recording=s.recording, speed=s.speed, type=s.type))
+                                keyframes=frames, recording=s.recording, speed=s.speed, type=s.type,
+                                projection=projections.pop()))
     return FramingPlan(theme=reel.theme, length_s=reel.length_s, width=out.width, height=out.height,
                        fps=out.fps, shots=shots,
                        source=fingerprint(reel.model_dump_json(), mount.model_dump_json(), out.model_dump_json(),

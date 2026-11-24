@@ -4,5 +4,9 @@ title: Dzień
 include: [view, walk, holder, companion, panorama]
 # Shots of the person holding the camera: a few per film, not most of it.
 max_per_type: {holder: 2}
+# Shots of one kind are not all framed alike: they take these in turn.
+variants:
+  view:   [[view], [view_in], [view_out]]
+  holder: [[holder], [holder_out]]
 target_length_s: 120
 min_material_s: 8

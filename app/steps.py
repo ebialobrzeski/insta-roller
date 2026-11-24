@@ -10,7 +10,7 @@ from pathlib import Path
 
 OUT_DIR = "insta-roller"                # the CLI's default output folder inside the job folder
 JOB_PROFILE = "job_profile.yaml"        # a job's own settings (profile "inne"), kept in the output folder
-MODULES = {"thumbnails": ["app.thumbs"]}        # every other step is `core.cli <step>`
+MODULES = {"thumbnails": ["app.thumbs"], "preview": ["app.preview"]}        # every other step is `core.cli <step>`
 
 
 def python_exe() -> str:
@@ -61,6 +61,14 @@ def cli_args(step: str, folder: str, options: dict, work: str | None = None) -> 
             args.append(f"--{key}={','.join(options[key])}")
     if options.get("mode", "day") != "day":
         args.append(f"--mode={options['mode']}")
+    if options.get("lengths"):
+        args.append("--lengths=" + ",".join(f"{name}={seconds:g}" for name, seconds in sorted(options["lengths"].items())))
+    if options.get("ai_framing"):
+        args.append(f"--ai-framing={options['ai_framing']}")
+    if options.get("ai_model"):
+        args.append(f"--ai-model={options['ai_model']}")
+    if options.get("ai_reasoning") is not None:
+        args.append(f"--ai-reasoning={int(options['ai_reasoning'])}")
     if options.get("overlay") is not None:
         args.append("--overlay" if options["overlay"] else "--no-overlay")
     if work:

@@ -10,7 +10,7 @@ mount: motorglider_canopy
 # One reel per theme with enough material. A scene goes to one reel only;
 # flight_summary borrows from the others. `landing` is switched off in its
 # theme file: turn it on for a job with `--enable landing`.
-themes: [takeoff_tow, thermal, glide_views, landing, flight_summary]
+themes: [takeoff_tow, thermal, glide_views, landing, flight_summary, surprise]
 encoder: auto            # auto = h264_nvenc when available, else libx264
 transition_s: 1.5        # camera move between presets inside one shot (at least)
 max_turn_dps: 45         # ... and never faster than this: a half turn takes four seconds
@@ -19,7 +19,9 @@ shot_handles_s: 1.5      # spare footage at both ends of exported shots
 # Framing moves the subject into the free area; the overlay stays inside it.
 safe_zone: {top: 0.08, bottom: 0.20, left: 0.0, right: 0.12}
 # Flight data drawn on the reel: speed dial, altitude, vario.
-overlay: {enabled: true, speed: true, altitude: true, vario: true, speed_max_kmh: 200, scale: 1.0}
+# bottom: free space under it (fraction of the height). 0.07 puts it low in the
+# frame; leave it out to keep it above the area the app's captions cover.
+overlay: {enabled: true, speed: true, altitude: true, vario: true, speed_max_kmh: 200, scale: 1.0, bottom: 0.07}
 # Automatic sync: gyro turns are matched to the flight track around the camera clock.
 sync: {search_s: 90, min_correlation: 0.4}
 thermal_good_climb_ms: 3.0   # climb rate that earns a thermal the full score

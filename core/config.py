@@ -71,6 +71,9 @@ class Overlay(Strict):
     speed_max_kmh: float = 200.0
     scale: float = 1.0
     fps: float = 10.0
+    # Free space under the overlay, as a fraction of the frame height.
+    # None = sit on top of the safe zone's bottom edge (clear of the app's captions).
+    bottom: float | None = None
 
 
 class SyncConfig(Strict):
@@ -94,6 +97,24 @@ class Holiday(Strict):
     speech_db: float = 6.0              # sound this far above the clip's floor counts as speech
 
 
+class AiFraming(Strict):
+    """A model picks the framing of every shot from the candidates (core/aiframe.py)."""
+    engine: Literal["off", "local", "openrouter"] = "off"
+    model: str = "anthropic/claude-sonnet-5.5"      # OpenRouter model, must accept images
+    # openrouter: tokens the model may spend thinking before it answers (0 = no extended reasoning).
+    # More gives a more considered film and costs more; models without reasoning ignore it.
+    reasoning_tokens: int = 0
+    variety: float = 0.08               # local: what a framing loses each time the reel already used it
+    brief: str = ""                     # openrouter: one more sentence of instructions
+    accents: int = 2                    # openrouter: unusual shots (planet, fisheye, roll) allowed in an ordinary reel
+    person_shots: int = 2               # openrouter: shots of a reel that may show the pilot / the holder
+    # local: sentences a good / a poor still is compared with
+    good: list[str] = ["a beautiful scenic photo with a clear subject and a visible horizon",
+                       "a well composed photo of a person, whole face in the frame"]
+    bad: list[str] = ["a blurry photo of glare and reflections", "a photo of nothing, empty sky",
+                      "a badly framed photo with the subject cut off at the edge"]
+
+
 class Profile(Strict):
     name: str
     kind: Literal["flight", "holiday", "custom"] = "flight"
@@ -114,6 +135,7 @@ class Profile(Strict):
     sync: SyncConfig = SyncConfig()
     holiday: Holiday = Holiday()
     people: dict[str, float] = {}       # person name -> screen-time weight
+    ai_framing: AiFraming = AiFraming()
     person_bonus: float = 0.2           # score added to a scene with a known person
     thermal_good_climb_ms: float = 3.0
     thermal_low_agl_m: float = 800.0
@@ -131,7 +153,12 @@ class Preset(Strict):
     exposure_ev: float = 0.0
     safe_zone: bool = True              # False: frame the preset on the full picture
     pan_dps: float = 0.0                # slow turn while the preset is held (panorama)
+    fov_end: float | None = None        # zoom while the preset is held: fov goes from `fov` to this
+    roll_turns: float = 0.0             # whole rolls while the preset is held (1 = a barrel roll)
     track: str | None = None            # follow a direction signal: travel | holder | person
+    # flat = an ordinary lens; planet = the whole surroundings wrapped into a ball
+    # (stereographic); fisheye = a very wide round view without stretched edges.
+    projection: Literal["flat", "planet", "fisheye"] = "flat"
 
 
 class Calibration(Strict):
@@ -167,6 +194,10 @@ class Theme(Strict):
     include: list[str]
     max_per_type: dict[str, int] = {}
     framing: dict[str, list[str]] = {}  # per scene type, replaces the profile's framing
+    # Several framings per scene type, taken in turn by the shots of that type,
+    # so a reel does not show the same trick twice in a row. Wins over `framing`.
+    variants: dict[str, list[list[str]]] = {}
+    speed: dict[str, float] = {}        # per scene type, replaces the profile's playback speed
     target_length_s: float | None = None
     min_material_s: float = 0.0         # less usable footage than this: no reel
     ending: Ending | None = None

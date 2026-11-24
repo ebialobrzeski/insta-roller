@@ -131,6 +131,8 @@ export const THEMES = {
   thermal: ["Komin", "Krążenie w noszeniu: skrzydło, ziemia pod spodem, pilot."],
   glide_views: ["Przelot i widoki", "Lot po prostej między kominami, horyzont i krajobraz."],
   flight_summary: ["Skrót lotu", "Cały lot w jednym filmie, po kawałku z każdej części."],
+  surprise: ["Zaskocz mnie", "Nietypowe ujęcia: mała planeta, rybie oko, obrót dookoła, beczka, przyspieszony hol."],
+  holiday_surprise: ["Zaskocz mnie", "Jeden dodatkowy film z całego wyjazdu: mała planeta, rybie oko, przyspieszone spacery."],
   landing: ["Lądowanie", "Krąg i przyziemienie. Potrzebne nagranie do samego lądowania."],
   holiday_day: ["Dzień", "Film z każdego dnia, ujęcia w kolejności nagrania."],
 };
@@ -156,8 +158,13 @@ export function shotName(type, attrs = {}) {
 const PRESETS = {front: "przód", front_level: "przód, równy horyzont", pilot: "pilot", pilot_wide: "pilot szeroko",
                  back_left: "tył w lewo", back_right: "tył w prawo", wing_left: "skrzydło lewe", wing_right: "skrzydło prawe",
                  instruments: "przyrządy", left_seat: "lewy fotel", right_seat: "prawy fotel", crew: "załoga",
-                 view: "widok", holder: "ty", companion: "towarzysz", panorama: "panorama"};
-export const presetName = id => PRESETS[id] || id;
+                 view: "widok", holder: "ty", companion: "towarzysz", panorama: "panorama",
+                 front_in: "przód, zbliżenie", front_out: "przód, oddalenie", pilot_close: "pilot, zbliżenie",
+                 ground_left: "ziemia z lewej", ground_right: "ziemia z prawej", planet: "mała planeta",
+                 planet_front: "planeta → przód", planet_view: "planeta → widok", bubble: "rybie oko, osoba",
+                 bubble_front: "rybie oko, przód", bubble_view: "rybie oko, widok", around: "obrót dookoła", barrel: "beczka",
+                 view_in: "widok, zbliżenie", view_out: "widok, oddalenie", holder_out: "ty, oddalenie"};
+export const presetName = id => PRESETS[id] || (/^ai\d+[a-z]$/.test(id) ? "kadr AI" : id);
 
 // A job's state in words. `short` is for the sidebar.
 const PHASES = ["Szukam scen", "Układam plan", "Renderuję"];

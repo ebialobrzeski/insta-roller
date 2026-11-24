@@ -50,6 +50,10 @@ def barred_types(themes: list[Theme]) -> set[str]:
     return {t for th in themes if not th.enabled for t in th.gates}
 
 
+def speed_of(scene: Scene, profile: Profile, theme: Theme) -> float:
+    return theme.speed.get(scene.type, profile.scene_types[scene.type].speed)
+
+
 def plan_reel(scenes: list[Scene], profile: Profile, theme: Theme, mount: Mount,
               target_length_s: float, used: frozenset[str] = frozenset(),
               barred: frozenset[str] = frozenset()) -> ReelPlan:
@@ -58,11 +62,17 @@ def plan_reel(scenes: list[Scene], profile: Profile, theme: Theme, mount: Mount,
     pool = [s for s in scenes if s.type in theme.include and s.type in types
             and s.type not in barred and (theme.borrows or s.id not in used)]
 
+    turn: dict[str, int] = {}
+
     def framing(s: Scene) -> list[str]:
+        options = theme.variants.get(s.type)
+        if options:                             # each shot of a type takes the next variant
+            turn[s.type] = turn.get(s.type, -1) + 1
+            return resolve_framing(options[turn[s.type] % len(options)], s, mount)
         return resolve_framing(theme.framing.get(s.type, types[s.type].framing), s, mount)
 
     def span(s: Scene) -> float:
-        return (s.end_s - s.start_s) / types[s.type].speed
+        return (s.end_s - s.start_s) / speed_of(s, profile, theme)
 
     # The ending is cut from the tail of the last usable scene; a recorded landing ends the reel itself.
     ending: tuple[Scene, float, float] | None = None
@@ -105,7 +115,7 @@ def plan_reel(scenes: list[Scene], profile: Profile, theme: Theme, mount: Mount,
 
     shots: list[Shot] = []
     for s in sorted(chosen, key=_order):
-        speed = types[s.type].speed
+        speed = speed_of(s, profile, theme)
         length = round(lengths[s.id] * speed, 2)                 # source seconds
         start = _window(s, length, types[s.type].anchor)
         if ending and s.id == ending[0].id:
@@ -130,7 +140,7 @@ def material_s(scenes: list[Scene], profile: Profile, theme: Theme, used: frozen
                barred: frozenset[str]) -> float:
     """Footage a theme could show: every free scene, up to its longest shot."""
     types = profile.scene_types
-    return sum(min((s.end_s - s.start_s) / types[s.type].speed, types[s.type].max_shot_s) for s in scenes
+    return sum(min((s.end_s - s.start_s) / speed_of(s, profile, theme), types[s.type].max_shot_s) for s in scenes
                if s.type in theme.include and s.type in types and s.type not in barred
                and (theme.borrows or s.id not in used))
 

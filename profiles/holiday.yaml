@@ -6,7 +6,9 @@ target_length_s: 120         # one day; a day with less usable footage gives a s
 audio: true                  # original sound; sped-up parts are silent
 audio_fade_s: 0.25           # fade at every cut
 mount: selfie_stick
-themes: [holiday_day]
+# The first theme makes the day films and the trip film; every further one
+# makes one more film of the whole trip.
+themes: [holiday_day, holiday_surprise]
 encoder: auto
 transition_s: 2.0
 max_turn_dps: 30             # the camera never turns faster than this between framings

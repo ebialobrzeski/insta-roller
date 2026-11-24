@@ -3,7 +3,8 @@
 import {$, h, api, icon, guard, toast, seconds, clock, comma, shotName, presetName, fileUrl, THEMES} from "./ui.js";
 import {refresh, setContext} from "./live.js";
 
-const rv = {id: 0, data: null, reels: {}, dirty: new Set(), zones: false, view: null};
+const rv = {id: 0, data: null, reels: {}, dirty: new Set(), zones: false, view: null,
+            stills: new Map(), asked: [], clips: new Map(), active: new WeakMap(), pick: null};
 const REASONS = {"theme is switched off": "ten temat jest wyłączony", "no usable material": "za mało pasujących scen"};
 
 const sceneOf = id => rv.data.scenes.find(s => s.id === id);
@@ -11,10 +12,49 @@ const filmLength = shots => shots.reduce((sum, s) => sum + s.duration_s / (s.spe
 const reelTitle = reel => (reel.plan && reel.plan.title) || (THEMES[reel.theme] || [])[0] || reel.theme;
 function touch(tag) { rv.dirty.add(tag); draw(); }
 
-function thumb(scene) {
+// --- previews: what a view shows at the moment of the shot, made on demand from the proxy ---------
+const moment = shot => Math.round(shot.start_s + shot.duration_s / 2);
+const stillKey = (shot, preset) => [shot.scene_id, moment(shot), preset, JSON.stringify(((shot.attrs || {}).views || {})[preset] || null),
+                                    JSON.stringify(Object.entries(shot.attrs || {}).filter(([k]) => /^(yaw|pitch)_/.test(k)))].join("|");
+function still(shot, preset) {                   // the picture's address, or null while it is being made
+  const key = stillKey(shot, preset);
+  if (!rv.stills.has(key)) {
+    rv.stills.set(key, null);
+    rv.asked.push({key, ask: {shot: {scene_id: shot.scene_id, recording: shot.recording || "", attrs: shot.attrs || {}}, at: moment(shot), preset}});
+  }
+  return rv.stills.get(key);
+}
+let fetching = false;
+async function fetchStills() {                   // one request for everything the screen asked for
+  if (fetching || !rv.asked.length) return;
+  fetching = true;
+  const batch = rv.asked.splice(0, 40), id = rv.id;
+  try {
+    const answer = await api(`/api/jobs/${id}/preview`, "POST", {stills: batch.map(b => b.ask)});
+    batch.forEach((b, i) => rv.stills.set(b.key, answer.stills[i] ? fileUrl(id, `review/${answer.stills[i]}`) : false));
+  } catch { batch.forEach(b => rv.stills.set(b.key, false)); }
+  fetching = false;
+  if (rv.id === id && rv.view.isConnected) { draw(); drawPicker(); }
+}
+const clipKey = shot => JSON.stringify([shot.scene_id, shot.start_s, shot.duration_s, shot.framing, shot.speed || 1, (shot.attrs || {}).views || null]);
+async function playClip(shot) {
+  const key = clipKey(shot), id = rv.id;
+  rv.clips.set(key, null);
+  draw();
+  try {
+    const answer = await api(`/api/jobs/${id}/preview`, "POST", {clip: shot});
+    rv.clips.set(key, answer.clip ? fileUrl(id, `review/${answer.clip}`) : false);
+    if (!answer.clip) toast(answer.error ? `Podgląd się nie udał: ${answer.error}` : "Podgląd się nie udał");
+  } catch { rv.clips.set(key, false); }
+  if (rv.id === id && rv.view.isConnected) draw();
+}
+
+function thumb(scene, picture, clip) {           // picture: a still's address, null = on its way, undefined = the scene's own
   const zone = rv.data.safe_zone || {}, [w, hgt] = rv.data.aspect, pct = v => `${(v || 0) * 100}%`;
-  return h("div", {class: "thumb", style: `aspect-ratio:${w}/${hgt}`},
-    scene && scene.thumb && h("img", {loading: "lazy", alt: "", src: fileUrl(rv.id, `review/${scene.id}.jpg`)}),
+  const fallback = scene && scene.thumb && fileUrl(rv.id, `review/${scene.id}.jpg`);
+  return h("div", {class: `thumb${picture === null ? " loading" : ""}`, style: `aspect-ratio:${w}/${hgt}`},
+    clip ? h("video", {src: clip, autoplay: true, loop: true, muted: true, playsinline: true, controls: true})
+      : (picture || fallback) && h("img", {loading: "lazy", alt: "", src: picture || fallback}),
     h("i", {style: `top:0;left:0;right:0;height:${pct(zone.top)}`}), h("i", {style: `bottom:0;left:0;right:0;height:${pct(zone.bottom)}`}),
     h("i", {style: `top:0;bottom:0;left:0;width:${pct(zone.left)}`}), h("i", {style: `top:0;bottom:0;right:0;width:${pct(zone.right)}`}));
 }
@@ -37,13 +77,16 @@ function place(tag, shot) {                      // film order: by time, the end
 
 function shotCard(tag, shot, index) {
   const scene = sceneOf(shot.scene_id) || {}, shots = rv.reels[tag], others = rv.data.reels.filter(r => rv.reels[r.tag] && r.tag !== tag);
-  const presets = [...new Set([...rv.data.presets, ...shot.framing])];
   const film = shot.duration_s / (shot.speed || 1);
+  const active = Math.min(rv.active.get(shot) || 0, shot.framing.length - 1);
+  const clip = rv.clips.get(clipKey(shot));
   return h("div", {class: "shot"},
     h("div", {class: "spread", style: "flex-wrap:nowrap"},
       h("span", {class: "no"}, `${index + 1} · ${clock(shot.start_s)}${shot.speed && shot.speed !== 1 ? ` · ×${shot.speed}` : ""}`),
       h("button", {class: "btn small quiet danger", type: "button", onclick: () => { shots.splice(index, 1); touch(tag); }}, "Usuń")),
-    thumb(scene),
+    thumb(scene, still(shot, shot.framing[active]), clip),
+    h("button", {class: "btn small quiet", type: "button", disabled: clip === null, onclick: () => { if (clip) { rv.clips.delete(clipKey(shot)); draw(); } else playClip(shot); }},
+      clip === null ? "Robię podgląd…" : clip ? "Pokaż klatkę" : "▶ Podgląd ruchu"),
     h("div", {class: "what"}, shotName(shot.type, {...scene.attrs, ...shot.attrs})),
     h("div", {class: "len"},
       h("button", {class: "btn", type: "button", "aria-label": "Krócej o pół sekundy", title: "Krócej", onclick: () => resize(shot, tag, -0.5)}, "−"),
@@ -51,16 +94,51 @@ function shotCard(tag, shot, index) {
       h("button", {class: "btn", type: "button", "aria-label": "Dłużej o pół sekundy", title: "Dłużej", onclick: () => resize(shot, tag, 0.5)}, "+")),
     h("div", {}, h("div", {class: "muted", style: "font-size:12px;margin-bottom:4px"}, shot.framing.length > 1 ? "Kadr: kamera przechodzi kolejno" : "Kadr"),
       h("div", {class: "chips"},
-        shot.framing.map((name, i) => h("span", {class: "chip"},
-          h("select", {value: name, "aria-label": `Kadr ${i + 1}`, onchange: e => { shot.framing[i] = e.target.value; touch(tag); }}, presets.map(p => h("option", {value: p}, presetName(p)))),
-          shot.framing.length > 1 && h("button", {type: "button", "aria-label": "Usuń ten kadr", onclick: () => { shot.framing.splice(i, 1); touch(tag); }}, "×"))),
-        h("button", {class: "chip add", type: "button", onclick: () => { shot.framing.push(shot.framing[shot.framing.length - 1] || presets[0]); touch(tag); }}, "+ kadr"))),
+        shot.framing.map((name, i) => h("span", {class: `chip kadr${i === active ? " on" : ""}`},
+          h("button", {class: "see", type: "button", "aria-label": `Pokaż kadr ${i + 1}: ${presetName(name)}`, title: "Pokaż ten kadr na miniaturze",
+                       onclick: () => { rv.active.set(shot, i); rv.clips.delete(clipKey(shot)); draw(); }},
+            still(shot, name) ? h("img", {alt: "", src: still(shot, name)}) : h("i", {})),
+          h("button", {class: "name", type: "button", title: "Zmień kadr: wybierz z podglądów", onclick: () => openPicker(tag, shot, i)}, presetName(name)),
+          shot.framing.length > 1 && h("button", {class: "x", type: "button", "aria-label": "Usuń ten kadr", onclick: () => { shot.framing.splice(i, 1); touch(tag); }}, "×"))),
+        shot.framing.length < 3 && h("button", {class: "chip add", type: "button", onclick: () => { shot.framing.push(shot.framing[shot.framing.length - 1]); rv.dirty.add(tag); openPicker(tag, shot, shot.framing.length - 1); draw(); }}, "+ kadr"))),
     others.length > 0 && h("select", {class: "move", "aria-label": "Przenieś do innego filmu", onchange: e => {
       if (!e.target.value) return;
       shots.splice(index, 1);
       rv.dirty.add(tag);
       place(e.target.value, shot);
     }}, h("option", {value: ""}, "Przenieś do…"), others.map(r => h("option", {value: r.tag}, reelTitle(r)))));
+}
+
+// --- choosing a view by its picture -----------------------------------------------------------------
+function openPicker(tag, shot, index) {
+  rv.pick = {tag, shot, index};
+  let dialog = $("#kadr-picker");
+  if (!dialog) {
+    dialog = h("dialog", {id: "kadr-picker", class: "picker"});
+    dialog.addEventListener("close", () => { rv.pick = null; });
+    dialog.addEventListener("click", e => { if (e.target === dialog) dialog.close(); });
+    document.body.append(dialog);
+  }
+  drawPicker();
+  if (!dialog.open) dialog.showModal();
+}
+function drawPicker() {
+  const dialog = $("#kadr-picker");
+  if (!dialog || !rv.pick) return;
+  const {tag, shot, index} = rv.pick, [w, hgt] = rv.data.aspect;
+  const names = [...new Set([...Object.keys((shot.attrs || {}).views || {}), ...rv.data.presets])];
+  dialog.replaceChildren(
+    h("div", {class: "spread"}, h("h2", {class: "title"}, "Wybierz kadr"),
+      h("button", {class: "btn small quiet", type: "button", onclick: () => dialog.close()}, "Zamknij")),
+    h("p", {class: "muted", style: "font-size:13px;margin:4px 0 14px"},
+      `Tak wygląda ta chwila (${clock(moment(shot))}) w każdym z kadrów. Kadry z ruchem pokazują swój początek; cały ruch zobaczysz w „Podglądzie ruchu”.`),
+    h("div", {class: "kadry"}, names.map(name => {
+      const picture = still(shot, name);
+      return h("button", {type: "button", class: name === shot.framing[index] ? "on" : "", onclick: () => { shot.framing[index] = name; rv.active.set(shot, index); dialog.close(); touch(tag); }},
+        h("span", {class: `thumb${picture === null ? " loading" : ""}`, style: `aspect-ratio:${w}/${hgt}`}, picture && h("img", {alt: "", src: picture})),
+        h("span", {}, presetName(name)));
+    })));
+  fetchStills();
 }
 
 function reelRow(reel) {
@@ -103,6 +181,7 @@ function draw() {
       h("button", {class: "btn primary", type: "button", disabled: empty, onclick: guard(render)}, icon("film"), "Renderuj")));
   rv.view.querySelectorAll(".strip").forEach((strip, i) => { strip.scrollLeft = keep[i] || 0; });
   window.scrollTo(0, top);
+  fetchStills();
 }
 
 async function save() {
@@ -132,6 +211,7 @@ async function load() {
 export async function show(view, id) {
   rv.id = id;
   rv.view = view;
+  rv.stills.clear(); rv.clips.clear(); rv.asked.length = 0;
   view.replaceChildren();
   try { await load(); }
   catch (error) {

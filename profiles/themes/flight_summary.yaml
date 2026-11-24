@@ -5,6 +5,14 @@ title: Skrót lotu
 borrows: true
 include: [takeoff, tow, release, climb, engine_off, thermal, glide, circuit, landing]
 max_per_type: {tow: 1, climb: 1, thermal: 3, glide: 2, circuit: 1}
+variants:
+  thermal:
+    - [ground_inner, wing_inner]
+    - [pilot_wide, wing_inner]
+    - [front_in]
+  glide:
+    - [pilot_close, front]
+    - [front_out]
 target_length_s: 45
 # Without a recorded landing the reel ends on the pilot.
 ending: {preset: pilot_wide, duration_s: 4}

@@ -3,5 +3,7 @@ name: takeoff_tow
 title: Start i hol
 include: [takeoff, tow, release, climb, engine_off]
 max_per_type: {tow: 2, climb: 2}
+variants:
+  takeoff: [[front_in]]         # a slow push in while the glider accelerates
 target_length_s: 20
 min_material_s: 10

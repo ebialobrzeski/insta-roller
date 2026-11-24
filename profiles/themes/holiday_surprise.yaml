@@ -1,0 +1,16 @@
+# Zaskocz mnie: one extra film of the whole trip in views the day films never
+# use: the surroundings as a small planet that unrolls into the way ahead,
+# round ultra-wide views, a slow look round and long walks as a time-lapse.
+name: holiday_surprise
+title: Zaskocz mnie
+include: [view, walk, holder, panorama]
+# Few, longer shots: the moves need time.
+max_per_type: {view: 6, holder: 3, walk: 2, panorama: 3}
+variants:
+  view:     [[planet, planet_view], [bubble_view], [around]]
+  walk:     [[bubble_view]]
+  holder:   [[bubble]]
+  panorama: [[planet], [around]]
+speed: {walk: 8}
+target_length_s: 60
+min_material_s: 15

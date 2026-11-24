@@ -36,6 +36,7 @@ flight, the IGC log. Originals are never modified; everything is written to
 insta-roller run "D:\flights\2026-06-23" --out work\flight
 insta-roller run "D:\flights\2026-06-23" --out work\flight --length 25 --themes flight_summary
 insta-roller run "D:\flights\2026-06-23" --out work\flight --enable landing --shots
+insta-roller run "D:\flights\2026-06-23" --out work\flight --lengths thermal=45,surprise=60
 insta-roller run "D:\holiday\cruise" --out work\cruise --mode both
 ```
 
@@ -74,6 +75,11 @@ profile lists the themes; one reel is made per theme with enough material.
 
 - `takeoff_tow`, `thermal`, `glide_views`: a scene goes to one reel only.
 - `flight_summary` borrows scenes from the others.
+- `surprise` ("Zaskocz mnie") also borrows, and shows the flight in views
+  the other reels never use: a small planet, round ultra-wide views, a slow
+  look all the way round, the launch as a time-lapse. Its `variants` give the
+  shots of one scene type different framings in turn; `speed` sets a
+  playback speed per scene type.
 - `landing` is switched off in its file. While it is off no reel uses circuit
   or touchdown scenes and the summary ends on the pilot. `--enable landing`
   turns it on for a job; a recorded landing then ends the summary too.
@@ -118,7 +124,8 @@ it is the quick fallback. `--source proxy` is quicker still.
 Mounts (`profiles/mounts/*.yaml`) hold the calibration and the presets.
 Per preset: angles, field of view, `horizon` (`aircraft` banks with the glider,
 `locked` keeps the horizon level using the bank angle from the gyroscope and
-speed) and `exposure_ev`.
+speed), `exposure_ev` and `projection` (`flat`, `planet` = stereographic
+small planet, `fisheye`; one projection per shot).
 
 `safe_zone` in the profile describes what the TikTok / Instagram interface
 covers. Framing moves each preset's subject to the centre of the free area and
@@ -127,6 +134,47 @@ the overlay stays inside it; `preview` shades the covered parts.
 `motorglider_canopy` has the presets `instruments`, `left_seat`, `right_seat`
 and `crew`; its `aliases` decide whether "pilot" shots show one seat or both.
 Its angles are first guesses and need a look at real footage.
+
+Camera moves inside a framing: `pan_dps` (slow turn), `fov_end` (slow zoom
+in or out while the view is held), `roll_turns` (the picture rolls over).
+Two presets with the `planet` projection in one shot unroll the small planet
+into a normal view. Themes list several framings per scene type in `variants`,
+so the shots of a reel are not all framed alike.
+
+### AI framing
+
+`--ai-framing local|openrouter` (or `ai_framing.engine` in the profile, or the
+choice in the app's wizard) lets a model pick the framing of every shot. The
+candidates are the theme's own framings plus the ordinary ones other themes
+use for the same scene type; each is rendered as a small still from the middle
+of the shot.
+
+- `local`: CLIP ViT-B/32 (ONNX, about 610 MB, downloaded once to
+  `%LOCALAPPDATA%\insta-roller\models`) scores the stills against the
+  sentences in `ai_framing.good` / `bad`; a framing the reel already used
+  loses `variety`. Needs `pip install -e ".[ai]"`. Nothing leaves the PC.
+- `openrouter`: a vision model (`ai_framing.model`, default
+  `anthropic/claude-sonnet-5.5`) directs the reel. It is told the footage is a
+  full 360 sphere and gets, for every shot, the whole sphere as a panorama
+  with a grid of angles plus the ready-made views. It aims the camera itself:
+  any yaw, pitch and field of view, a slow zoom or pan, a projection, one to
+  three views in a row, with the rhythm of the whole film in mind. In a second
+  round it sees what its own views really show and aims the poor ones again.
+  Shots of the pilot / holder (`ai_framing.person_shots`, default 2) and
+  showpieces such as the small planet (`ai_framing.accents`, default 2) are
+  rationed; numbers are clamped and paths that are not valid are ignored.
+  The stills and the shot list (type, length, view names) are sent to
+  OpenRouter; no GPS, IGC or file names. The key is read from
+  `OPENROUTER_API_KEY` in the environment or `.env`.
+
+`--ai-model <id>` picks another OpenRouter model for a job and `--ai-reasoning
+<tokens>` (`ai_framing.reasoning_tokens`) lets it think before it answers;
+0 means no extended reasoning. The app offers both next to the engine choice,
+with the list of OpenRouter models that accept pictures.
+
+The choice and its reason are kept in the reel plan (`attrs.ai`) and cached,
+so planning again asks nobody. If the engine cannot run, the theme's framing
+stays and `plan` says why.
 
 ### Overlay
 
@@ -148,6 +196,9 @@ Many short clips from a selfie stick, several days in one folder.
 - `--mode day` makes one film per day, `--mode trip` one film of everything
   with a share per day, `--mode both` both, from the same analysis.
 - Original sound with a short fade at every cut.
+- A further theme in the profile (`holiday_surprise`, "Zaskocz mnie") makes one
+  more film of the whole trip: small planet, round ultra-wide views, long
+  walks as a time-lapse.
 
 With the Media SDK stitcher the clips are stabilised (FlowState with direction
 lock). With the FFmpeg stitch scenes are only levelled once per scene. In both

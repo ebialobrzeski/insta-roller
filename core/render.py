@@ -32,7 +32,7 @@ def sendcmd_script(keyframes: list[Keyframe], with_ev: bool = False) -> str:
     dense = len(keyframes) > 2 and max(b.t - a.t for a, b in zip(keyframes, keyframes[1:])) <= 1.0
     ease = "TI" if dense else "(TI*TI*(3-2*TI))"
     params = [("yaw", FLAT, "yaw", True), ("pitch", FLAT, "pitch", False),
-              ("roll", FLAT, "roll", False), ("fov", FLAT, "d_fov", False)]
+              ("roll", FLAT, "roll", True), ("fov", FLAT, "d_fov", False)]
     if with_ev:
         params.append(("ev", EV, "exposure", False))
     lines = []
@@ -52,9 +52,13 @@ def sendcmd_script(keyframes: list[Keyframe], with_ev: bool = False) -> str:
     return "\n".join(lines) + "\n"
 
 
-def flat_filter(first: Keyframe | Preset, width: int, height: int) -> str:
-    return (f"{FLAT}=input=e:output=flat:w={width}:h={height}:d_fov={first.fov:g}"
-            f":yaw={_wrap(first.yaw):.4f}:pitch={first.pitch:g}:roll={first.roll:g}:reset_rot=1:interp=cubic")
+OUTPUT = {"flat": "flat", "planet": "sg", "fisheye": "fisheye", "pano": "e"}     # v360 names; pano = the whole sphere
+
+
+def flat_filter(first: Keyframe | Preset, width: int, height: int, projection: str = "flat") -> str:
+    projection = getattr(first, "projection", projection)
+    return (f"{FLAT}=input=e:output={OUTPUT[projection]}:w={width}:h={height}:d_fov={first.fov:g}"
+            f":yaw={_wrap(first.yaw):.4f}:pitch={first.pitch:g}:roll={_wrap(first.roll):g}:reset_rot=1:interp=cubic")
 
 
 def encoder_args(encoder: str) -> list[str]:
@@ -130,7 +134,7 @@ def render_shot(shot: FramedShot, plan: FramingPlan, ctx: Context, handles_s: fl
 
     script = shots_dir / f"{key}.cmd"
     script.write_text(sendcmd_script(shot.keyframes, with_ev), encoding="ascii")
-    chain = [f"sendcmd=f={script.name}", flat_filter(shot.keyframes[0], plan.width, plan.height)]
+    chain = [f"sendcmd=f={script.name}", flat_filter(shot.keyframes[0], plan.width, plan.height, shot.projection)]
     if with_ev:
         chain.append(f"{EV}=exposure={shot.keyframes[0].ev:.3f}")
     chain.append("format=yuv420p")
@@ -209,10 +213,10 @@ def zone_boxes(zone: SafeZone, width: int, height: int) -> list[str]:
 
 def still(rec: Recording, mount: Mount, at_s: float, view: Keyframe | Preset, size: tuple[int, int],
           out: Path, work: Path, log: Path, zone: SafeZone | None = None, label: str = "",
-          level: tuple[float, float] | None = None) -> Path:
+          level: tuple[float, float] | None = None, projection: str = "flat") -> Path:
     """One flat frame of the recording, for previews and scene thumbnails."""
     out.parent.mkdir(parents=True, exist_ok=True)
-    chain = [flat_filter(view, *size)] + (zone_boxes(zone, *size) if zone else [])
+    chain = [flat_filter(view, *size, projection)] + (zone_boxes(zone, *size) if zone else [])
     labelled = chain + [f"drawtext=text='{label}':x=20:y=20:fontsize={size[1] // 24}:fontcolor=white"
                         ":box=1:boxcolor=black@0.5"]
     for attempt in ([labelled, chain] if label else [chain]):
@@ -236,7 +240,8 @@ def preview_presets(rec: Recording, mount: Mount, at_s: float, size: tuple[int, 
     stills = []
     for name in mount.presets:
         view = frame_shot([name], 1.0, mount, 0.0, zone, size)[0]
-        stills.append(still(rec, mount, at_s, view, size, out_dir / f"preset_{name}.jpg", work, log, zone, name, level))
+        stills.append(still(rec, mount, at_s, view, size, out_dir / f"preset_{name}.jpg", work, log, zone, name, level,
+                            mount.presets[name].projection))
     sheet = out_dir / "presets.jpg"
     args = [a for s in stills for a in ("-i", str(s))]
     ffmpeg.run([*args, "-filter_complex", f"hstack=inputs={len(stills)}", "-q:v", "3", str(sheet)], log=log)

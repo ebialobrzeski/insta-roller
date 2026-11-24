@@ -13,6 +13,7 @@ dependencies = ["pydantic>=2.6", "pyyaml>=6", "numpy>=1.26", "pillow>=10.1"]
 dev = ["pytest>=8"]
 ffmpeg = ["imageio-ffmpeg>=0.5"]
 faces = ["insightface", "onnxruntime"]
+ai = ["onnxruntime", "tokenizers", "pillow", "httpx"]
 app = ["fastapi", "uvicorn", "httpx", "pywebview>=5", "pystray"]
 
 [project.scripts]

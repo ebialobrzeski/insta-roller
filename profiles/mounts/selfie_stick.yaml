@@ -19,3 +19,17 @@ presets:
   holder:    {yaw: 0, pitch: -8, fov: 112, track: holder, safe_zone: false}
   companion: {yaw: 0, pitch: -8, fov: 108, track: person, safe_zone: false}
   panorama:  {yaw: -30, pitch: 0, fov: 110, track: travel, pan_dps: 6, safe_zone: false}
+  # Moves inside one framing (fov_end = a slow zoom while the view is held).
+  view_in:     {yaw: 0, pitch: 0,  fov: 118, fov_end: 95,  track: travel, safe_zone: false}
+  view_out:    {yaw: 0, pitch: 0,  fov: 95,  fov_end: 122, track: travel, safe_zone: false}
+  holder_out:  {yaw: 0, pitch: -8, fov: 95,  fov_end: 122, track: holder, safe_zone: false}
+  # Unusual views for the "Zaskocz mnie" film.
+  # planet: straight down, the surroundings wrapped into a ball that slowly turns;
+  # followed by planet_view the ball unrolls into the way ahead.
+  planet:      {yaw: 0, pitch: -90, fov: 300, projection: planet,  safe_zone: false, pan_dps: 10}
+  planet_view: {yaw: 0, pitch: 0,   fov: 150, projection: planet,  track: travel, safe_zone: false}
+  # bubble: round ultra-wide view of the holder / of the way ahead.
+  bubble:      {yaw: 0, pitch: -5,  fov: 220, projection: fisheye, track: holder, safe_zone: false}
+  bubble_view: {yaw: 0, pitch: 0,   fov: 220, projection: fisheye, track: travel, safe_zone: false}
+  # around: a slow look round, from the side across the way ahead.
+  around:      {yaw: -60, pitch: 0, fov: 115, track: travel, pan_dps: 15, safe_zone: false}

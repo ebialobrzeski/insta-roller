@@ -750,11 +750,13 @@ def test_timeline_is_a_barogram_for_a_flight(env):
     (out / "telemetry.json").write_text(json.dumps({"version": 1, "source": "igc", "samples": samples}))
     data = client.get(url).json()
     assert data["kind"] == "flight" and data["duration_s"] == 900.0
-    assert 100 < len(data["points"]) <= web.POINTS and [431.0, 1987.0] in data["points"]
+    assert 100 < len(data["points"]) <= web.POINTS and [431.0, 1987.0, 90.0, 0.0] in data["points"]    # time, altitude, speed, vario
     assert [p[0] for p in data["points"]] == sorted(p[0] for p in data["points"])
     assert data["points"][0][0] == 0.0 and data["points"][-1][0] >= 890.0
     assert sorted((s["reel"], s["type"], s["start_s"], s["duration_s"]) for s in data["shots"]) == [
         ("flight_summary_45s", "takeoff", 100.0, 5.0), ("thermal_30s", "thermal", 346.0, 8.0)]
+    assert data["job"] == job["id"] and all({"id", "type", "start_s", "end_s", "thumb"} <= set(sc) for sc in data["scenes"])
+    assert all("theme" in shot for shot in data["shots"])
     (out / "telemetry.json").unlink()                                       # scenes without telemetry: an empty chart
     assert client.get(url).json()["points"] == []
     assert client.get("/api/jobs/99/timeline").status_code == 404
@@ -1098,3 +1100,43 @@ def test_install_shortcut_command_writes_into_the_start_menu(monkeypatch, tmp_pa
     assert desktop.read_shortcut(link)["arguments"] == f'-m app --data "{tmp_path / "data"}"'
     main(["--uninstall-shortcut", "--data", str(tmp_path / "data")])
     assert not link.exists() and not (tmp_path / "data" / "app.lock").exists()   # no app was started for this
+
+
+def test_ai_framing_choice_reaches_the_command_line():
+    from app import steps, web
+    args = steps.cli_args("plan", "D:/x", web.JobOptions(ai_framing="local").model_dump())
+    assert "--ai-framing=local" in args
+    assert not any(a.startswith("--ai-framing") for a in steps.cli_args("plan", "D:/x", web.JobOptions().model_dump()))
+
+
+def test_reel_lengths_reach_the_command_line_and_the_plan():
+    from types import SimpleNamespace
+    from app import steps, web
+    from core.cli import Job
+    args = steps.cli_args("plan", "D:/x", web.JobOptions(lengths={"thermal": 40, "surprise": 60}).model_dump())
+    assert "--lengths=surprise=60,thermal=40" in args
+    job = Job.__new__(Job)
+    job.args = SimpleNamespace(themes="thermal,glide_views", enable=None, disable=None, lengths="thermal=40")
+    job.profile = SimpleNamespace(themes=[])
+    assert {t.name: t.target_length_s for t in job.themes} == {"thermal": 40.0, "glide_views": 25}
+
+
+def test_ai_model_and_reasoning_reach_the_request():
+    from types import SimpleNamespace
+    from app import steps, web
+    from core import aiframe
+    from core.config import load_mount, load_profile
+    options = web.JobOptions(ai_framing="openrouter", ai_model="google/gemini-4-neon", ai_reasoning=4000).model_dump()
+    args = steps.cli_args("plan", "D:/x", options)
+    assert "--ai-model=google/gemini-4-neon" in args and "--ai-reasoning=4000" in args
+    profile = load_profile("flight")
+    profile.ai_framing.model, profile.ai_framing.reasoning_tokens = "google/gemini-4-neon", 4000
+    body = aiframe.request_body([], profile, load_mount(profile.mount), "x", False)
+    assert body["model"] == "google/gemini-4-neon" and body["reasoning"] == {"max_tokens": 4000}
+    assert body["max_tokens"] > 4000 and "temperature" not in body
+    profile.ai_framing.reasoning_tokens = 0
+    plain = aiframe.request_body([], profile, load_mount(profile.mount), "x", False)
+    assert "reasoning" not in plain and "max_tokens" not in plain
+    import pytest
+    with pytest.raises(Exception):
+        web.JobOptions(ai_model="bad model; rm")

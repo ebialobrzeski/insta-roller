@@ -106,6 +106,7 @@ class FramedShot(BaseModel):
     recording: str = ""
     speed: float = 1.0
     type: str = ""
+    projection: str = "flat"     # flat | planet | fisheye, the same for the whole shot
 
 
 class FramingPlan(Contract):

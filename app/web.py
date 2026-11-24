@@ -7,13 +7,16 @@ It writes only there, into profiles/ and into the app's data folder. There is no
 from __future__ import annotations
 
 import functools
+import hashlib
 import json
 import math
 import os
 import re
 import shutil
 import subprocess
+import threading
 import time
+import uuid
 import zipfile
 from collections import Counter
 from pathlib import Path
@@ -31,7 +34,7 @@ from core.config import PROFILES_DIR, Mount, Profile, Theme, list_names, load_mo
 from . import people as people_page
 from .db import Busy, Queue
 from .runner import run_subprocess
-from .steps import JOB_PROFILE, OUT_DIR, cli_args, job_work, pipeline, render_steps
+from .steps import JOB_PROFILE, OUT_DIR, cli_args, job_work, pipeline, python_exe, render_steps
 from .steps import out_dir as job_out
 
 STATIC = Path(__file__).parent / "static"
@@ -54,11 +57,15 @@ class JobOptions(BaseModel):
     profile_yaml: str = ""                  # profile "inne": the job's own settings
     mount: str = ""
     length: float | None = Field(None, gt=0)
+    lengths: dict[str, float] = {}          # theme -> seconds, for the reels whose length was changed
     enable: list[str] = []                  # themes switched on for this job, e.g. landing
     disable: list[str] = []
     mode: Literal["day", "trip", "both"] = "day"
     people: list[str] = []
     overlay: bool | None = None
+    ai_framing: Literal["off", "local", "openrouter"] | None = None   # None = as the profile says
+    ai_model: str = Field("", max_length=120, pattern=r"^[\w.:/@-]*$")  # OpenRouter model; empty = as the profile says
+    ai_reasoning: int | None = Field(None, ge=0, le=200_000)          # reasoning tokens; None = as the profile says
     review: bool = False                    # stop after analysis + plan for the scene review
     shots: bool = False                     # also export the separate shots
     films: bool = True                      # False = "same ujęcia": the separate shots, no finished film
@@ -90,6 +97,12 @@ class Compose(BaseModel):
 
 class Version(BaseModel):
     length: float = Field(gt=0)
+
+
+class PreviewAsk(BaseModel):
+    """Pictures the review screen wants: stills of a moment through a view, and one shot as a clip."""
+    stills: list[dict] = Field([], max_length=120)      # {"shot": {scene_id, recording, attrs}, "at": s, "preset": name}
+    clip: dict | None = None                            # a shot of a reel plan
 
 
 class ReviewEdit(BaseModel):
@@ -435,7 +448,8 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
 
         found = each("profiles", lambda p: {"kind": p.kind, "mount": p.mount, "themes": p.themes,
                                              "length": p.target_length_s, "overlay": p.overlay.enabled,
-                                             "people": list(p.people)})
+                                             "people": list(p.people), "ai": p.ai_framing.engine,
+                                             "ai_model": p.ai_framing.model, "ai_reasoning": p.ai_framing.reasoning_tokens})
         people = names_of(read_json(people_file))
         for p in found:
             people += [n for n in p.get("people", []) if n not in people]
@@ -446,6 +460,19 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
                                                     "length": t.target_length_s})}
 
     # --- UI: jobs ---------------------------------------------------------
+    ai_models: dict = {}
+
+    @app.get("/api/ai/models")
+    def ai_model_list():
+        """Vision models OpenRouter offers, for the wizard's list. Read once per run of the app."""
+        if "items" not in ai_models:
+            from core import aiframe
+            try:
+                ai_models["items"] = aiframe.list_models()
+            except aiframe.Unavailable as error:
+                return {"models": [], "error": str(error)}
+        return {"models": ai_models["items"]}
+
     @app.get("/api/jobs")
     def jobs():
         return [view(j, 12) for j in queue.list()]
@@ -592,7 +619,8 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
         shots = []
         for entry in (read_json(out / "reels.json") or {}).get("reels", []):
             plan = read_json(out / f"reel_plan_{entry.get('tag')}.json") if entry.get("status") == "planned" else None
-            shots += [{"reel": entry["tag"], "type": s["type"], "start_s": s["start_s"], "duration_s": s["duration_s"],
+            shots += [{"reel": entry["tag"], "theme": entry.get("theme", ""), "type": s["type"],
+                       "start_s": s["start_s"], "duration_s": s["duration_s"],
                        "day": days.get(s["scene_id"], "")} for s in (plan or {}).get("shots", [])]
         recordings = scenes.get("recordings") or [r for r in [scenes.get("recording")] if r]
         if scenes.get("source") == "holiday" or any(r.get("day") for r in recordings):
@@ -606,9 +634,13 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
                 day["shots"] = len({(s["start_s"], s["day"]) for s in shots if s["day"] == day["day"]})
             return {"kind": "holiday", "days": [strip[d] for d in sorted(strip)], "shots": len(shots)}
         samples = (read_json(out / "telemetry.json") or {}).get("samples", [])
-        return {"kind": "flight", "duration_s": sum(r.get("duration_s", 0.0) for r in recordings[:1]),
-                "points": [[s["t"], s["alt_m"]] for s in thin(samples)],
-                "shots": [{k: s[k] for k in ("reel", "type", "start_s", "duration_s")} for s in shots]}
+        return {"kind": "flight", "job": job["id"], "duration_s": sum(r.get("duration_s", 0.0) for r in recordings[:1]),
+                # per point: time, altitude, ground speed, climb rate (the last two for the chart's read-out)
+                "points": [[s["t"], s["alt_m"], s.get("speed_kmh"), s.get("vario_ms")] for s in thin(samples)],
+                "scenes": [{"id": s["id"], "type": s["type"], "start_s": s["start_s"], "end_s": s["end_s"],
+                            "attrs": s.get("attrs", {}), "thumb": (out / "review" / f"{s['id']}.jpg").exists()}
+                           for s in scenes.get("scenes", [])],
+                "shots": [{k: s[k] for k in ("reel", "theme", "type", "start_s", "duration_s")} for s in shots]}
 
     @app.post("/api/window/show")
     def window_show():
@@ -717,7 +749,8 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
                     raise HTTPException(422, f"Rolka {tag}, ujęcie {index}: brak danych")
                 if scene is None:
                     raise HTTPException(422, f"Rolka {tag}: nie ma sceny '{shot.get('scene_id')}'")
-                if not framing or (mount and any(name not in mount.presets for name in framing)):
+                own = (shot.get("attrs") or {}).get("views") or {}        # views an AI made for this shot
+                if not framing or (mount and any(name not in mount.presets and name not in own for name in framing)):
                     raise HTTPException(422, f"Rolka {tag}, ujęcie {index}: nieznany preset kadru")
                 if (scene["id"], start, length) not in old:         # a changed shot stays inside its scene
                     length = round(min(max(length, speed), scene["end_s"] - scene["start_s"]), 2)
@@ -735,6 +768,64 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
         for tag, plan in plans.items():
             (out / f"reel_plan_{tag}.json").write_text(json.dumps(plan, indent=2, ensure_ascii=False), "utf-8")
         return {tag: plan["length_s"] for tag, plan in plans.items()}
+
+    preview_lock = threading.Lock()
+
+    @app.post("/api/jobs/{job_id}/preview")
+    def preview(job_id: int, body: PreviewAsk):
+        """Make the pictures that are not there yet (from the proxy) and say where each one is."""
+        job = need(job_id)
+        review_dir = out_dir(job) / "review"
+        if not (out_dir(job) / "scenes.json").exists():
+            raise HTTPException(409, "Zadanie nie ma jeszcze planu")
+
+        def named(kind: str, payload, ext: str) -> str:
+            digest = hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
+            return f"{kind}/{digest}.{ext}"
+
+        def aim(attrs: dict) -> dict:               # what of a shot decides where a view looks
+            return {k: v for k, v in (attrs or {}).items() if k == "views" or k.startswith(("yaw_", "pitch_", "track_"))}
+
+        spec: dict = {"stills": [], "clips": []}
+        stills = []
+        try:
+            for item in body.stills:
+                shot = item["shot"]
+                at, preset = round(float(item["at"]), 1), str(item["preset"])
+                base = {"scene_id": str(shot["scene_id"]), "recording": str(shot.get("recording") or ""),
+                        "attrs": aim(shot.get("attrs")), "start_s": at, "duration_s": 1.0}
+                file = named("stills", [base, preset], "jpg")
+                stills.append(file)
+                if not (review_dir / file).exists() and not any(s["file"] == file for s in spec["stills"]):
+                    spec["stills"].append({"file": file, "shot": base, "at": at, "preset": preset})
+            clip = None
+            if body.clip:
+                c = body.clip
+                shot = {"scene_id": str(c["scene_id"]), "type": str(c.get("type") or ""), "start_s": float(c["start_s"]),
+                        "duration_s": float(c["duration_s"]), "framing": [str(n) for n in c["framing"]],
+                        "recording": str(c.get("recording") or ""), "speed": float(c.get("speed") or 1.0),
+                        "attrs": aim(c.get("attrs"))}
+                clip = named("clips", shot, "mp4")
+                if not (review_dir / clip).exists():
+                    spec["clips"].append({"file": clip, "shot": shot})
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(422, "Podgląd: brak danych ujęcia")
+        said: list[str] = []
+        if spec["stills"] or spec["clips"]:
+            review_dir.mkdir(parents=True, exist_ok=True)
+            wanted = review_dir / f"preview_{uuid.uuid4().hex}.json"
+            wanted.write_text(json.dumps(spec), "utf-8")
+            work = job_work(settings()["work"], job["id"])
+            cmd = [python_exe(), "-m", *cli_args("preview", job["folder"], job["options"], work)]
+            try:
+                with preview_lock:                  # one at a time: they all read the same proxy
+                    runner(cmd, said.append, lambda: False, {"INSTA_ROLLER_PREVIEW": str(wanted)})
+            finally:
+                wanted.unlink(missing_ok=True)
+        problems = [line for line in said if line.startswith("preview: ") and "->" not in line]
+        return {"stills": [file if (review_dir / file).exists() else None for file in stills],
+                "clip": clip if clip and (review_dir / clip).exists() else None,
+                "error": problems[-1] if problems else ""}
 
     # --- UI: settings -----------------------------------------------------
     @app.get("/api/settings")

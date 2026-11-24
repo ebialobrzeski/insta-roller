@@ -1,5 +1,5 @@
 // Przegląd: what to do, the current film as a picture, the state of the PC, the finished films.
-import {h, api, icon, size, date, duration, plural, shotName, stateText, fileUrl, clock, saveButton} from "./ui.js";
+import {h, api, icon, size, date, duration, plural, shotName, stateText, fileUrl, clock, saveButton, THEMES} from "./ui.js";
 import {live, watch, setContext, play} from "./live.js";
 
 const STARTS = [
@@ -42,7 +42,58 @@ export function barogram(box, data) {
     h("text", {x: 2, y: H - 8}, label(0)),
     h("text", {x: W / 2, y: H - 8, "text-anchor": "middle"}, label((t1 - t0) / 2)),
     h("text", {x: W - 2, y: H - 8, "text-anchor": "end"}, label(t1 - t0)),
-    h("text", {x: W - 2, y: Math.max(y(hi) - 4, 10), "text-anchor": "end"}, `${Math.round(hi)} m`)));
+    h("text", {x: W - 2, y: Math.max(y(hi) - 4, 10), "text-anchor": "end"}, `${Math.round(hi)} m`),
+    h("line", {class: "cursor", x1: 0, x2: 0, y1: pad.t, y2: base, visibility: "hidden"}),
+    h("circle", {class: "cursor-dot", r: 5, visibility: "hidden"})));
+
+  // Read-out: what the flight was doing at the moment under the pointer (or the arrow keys).
+  const svg = box.querySelector("svg"), cursor = svg.querySelector(".cursor"), dot = svg.querySelector(".cursor-dot");
+  const tip = h("div", {class: "readout", role: "status", hidden: true});
+  box.append(tip);
+  svg.setAttribute("tabindex", "0");
+  const signed = v => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v).toFixed(1).replace(".", ",")}`;
+  let at = null;
+  function show(t) {
+    at = Math.min(Math.max(t, t0), t1);
+    let i = points.findIndex(p => p[0] >= at);
+    if (i < 0) i = points.length - 1;
+    if (i > 0 && at - points[i - 1][0] < points[i][0] - at) i -= 1;
+    const [, , speed, vario] = points[i], alt = altAt(at), px = x(at);
+    const scene = (data.scenes || []).find(sc => at >= sc.start_s && at <= sc.end_s && sc.type !== "release")
+      || (data.scenes || []).find(sc => at >= sc.start_s && at <= sc.end_s);
+    const used = data.shots.filter(sh => at >= sh.start_s && at <= sh.start_s + sh.duration_s);
+    const films = [...new Set(used.map(sh => (THEMES[sh.theme] || [sh.theme || sh.reel])[0]))];
+    cursor.setAttribute("x1", px); cursor.setAttribute("x2", px); cursor.setAttribute("visibility", "visible");
+    dot.setAttribute("cx", px); dot.setAttribute("cy", y(alt)); dot.setAttribute("visibility", "visible");
+    tip.replaceChildren(
+      scene && scene.thumb && h("img", {alt: "", src: fileUrl(data.job, `review/${scene.id}.jpg`)}),
+      h("div", {},
+        h("div", {class: "when"}, label(at - t0), scene && h("b", {}, shotName(scene.type, scene.attrs))),
+        h("dl", {},
+          h("dt", {}, "Wysokość"), h("dd", {}, `${Math.round(alt)} m`),
+          speed != null && h("dt", {}, "Prędkość"), speed != null && h("dd", {}, `${Math.round(speed)} km/h`),
+          vario != null && h("dt", {}, vario >= 0 ? "Wznoszenie" : "Opadanie"), vario != null && h("dd", {class: vario >= 0.2 ? "up" : vario <= -0.2 ? "down" : ""}, `${signed(vario)} m/s`)),
+        h("div", {class: films.length ? "in" : "in none"}, films.length ? `Ujęcie w: ${films.join(", ")}` : "Ten moment nie trafił do żadnego filmu")));
+    tip.hidden = false;
+    const width = tip.offsetWidth, left = px / W * box.clientWidth;
+    tip.style.left = `${Math.min(Math.max(left - width / 2, 0), box.clientWidth - width)}px`;
+  }
+  function hide() { at = null; tip.hidden = true; cursor.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); }
+  const timeAt = e => { const r = svg.getBoundingClientRect(); return t0 + (e.clientX - r.left) / r.width * (t1 - t0); };
+  svg.addEventListener("pointermove", e => show(timeAt(e)));
+  svg.addEventListener("pointerdown", e => show(timeAt(e)));
+  svg.addEventListener("pointerleave", e => { if (e.pointerType === "mouse" && document.activeElement !== svg) hide(); });
+  svg.addEventListener("blur", hide);
+  svg.addEventListener("keydown", e => {
+    const step = (t1 - t0) / (e.shiftKey ? 20 : 120);
+    const marks = shots.map(sh => sh.start_s + sh.duration_s / 2).sort((a, b) => a - b), now = at == null ? t0 : at;
+    const to = {ArrowRight: now + step, ArrowLeft: now - step, Home: t0, End: t1,
+                PageDown: marks.find(m => m > now + 1), PageUp: [...marks].reverse().find(m => m < now - 1), Escape: null}[e.key];
+    if (e.key === "Escape") return hide();
+    if (to === undefined) return;
+    e.preventDefault();
+    show(to);
+  });
 }
 
 function dayStrip(data) {
@@ -66,7 +117,7 @@ function current(job, data, films) {
       h("div", {style: "text-align:right"}, h("div", {class: "big"}, big), h("div", {class: "muted", style: "font-size:13px;white-space:nowrap"}, data ? "wybranych ujęć" : "filmów"))),
     !data ? h("p", {class: "muted mt2"}, busy ? "Wykres pojawi się, gdy skończy się szukanie scen." : "Ten film nie ma jeszcze znalezionych scen.")
       : flight ? box : dayStrip(data),
-    flight && h("p", {class: "muted", style: "font-size:13px;margin-top:10px"}, "Wysokość w czasie lotu. Kółka i pasy to miejsca, z których pochodzą ujęcia."),
+    flight && h("p", {class: "muted", style: "font-size:13px;margin-top:10px"}, "Wysokość w czasie lotu. Kółka i pasy to miejsca, z których pochodzą ujęcia. Najedź na wykres (albo użyj strzałek), żeby zobaczyć, co działo się w danej chwili."),
     now.length ? h("div", {class: "inline mt2"}, now.slice(0, 6).map(f => h("button", {class: "btn small", type: "button", onclick: () => play(filmOf(f))},
       icon("play", "icon solid"), f.title, h("span", {class: "mono muted"}, f.length_s ? `${f.length_s} s` : "")))) : null,
     h("div", {class: "inline mt2"},
