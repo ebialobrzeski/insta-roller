@@ -456,3 +456,5 @@ dialog.picker { width: min(920px, calc(100vw - 32px)); max-height: calc(100vh - 
 .working::after { content: ""; position: absolute; inset: 0; width: 35%; border-radius: 2px; background: var(--accent); animation: slide 1.5s ease-in-out infinite; }
 @keyframes slide { from { left: -35%; } to { left: 100%; } }
 @media (prefers-reduced-motion: reduce) { .steps3 .on::after, .alive i, .working::after { animation: none; } .working::after { left: 0; width: 100%; opacity: .5; } }
+.linklike { all: unset; cursor: pointer; margin-left: 6px; text-decoration: underline dotted; color: var(--muted); }
+.linklike:focus-visible { outline: 2px solid var(--accent); }

@@ -60,11 +60,15 @@ class TelemetrySample(BaseModel):
     alt_m: float
     vario_ms: float
     bank_deg: float          # positive = right wing down, from turn rate and speed
+    heading_deg: float | None = None     # where the nose points, 0 = north (log + gyroscope)
+    lat: float | None = None
+    lon: float | None = None
 
 
 class Telemetry(Contract):
     source: str
     samples: list[TelemetrySample]   # one per second
+    home: list[float] | None = None  # [lat, lon, alt] of the place the flight started from
 
 
 class Shot(BaseModel):
@@ -77,6 +81,7 @@ class Shot(BaseModel):
     recording: str = ""
     speed: float = 1.0
     attrs: dict = {}
+    second: list[str] = []       # split frame: the views of the lower picture
 
 
 class ReelPlan(Contract):
@@ -86,6 +91,8 @@ class ReelPlan(Contract):
     shots: list[Shot]
     edited: bool = False         # set by a manual edit; `plan` then leaves the file alone
     title: str = ""
+    removed: bool = False        # taken out by hand: the plan is kept, the reel is not made
+    take: int = 0                # raised to have the reel made anew: other scenes and framings are chosen
 
 
 class Keyframe(BaseModel):
@@ -107,6 +114,7 @@ class FramedShot(BaseModel):
     speed: float = 1.0
     type: str = ""
     projection: str = "flat"     # flat | planet | fisheye, the same for the whole shot
+    second: list[Keyframe] = []  # split frame: the camera of the lower picture (always a normal lens)
 
 
 class FramingPlan(Contract):

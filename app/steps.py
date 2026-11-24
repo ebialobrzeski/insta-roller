@@ -67,6 +67,8 @@ def cli_args(step: str, folder: str, options: dict, work: str | None = None) -> 
         args.append("--lengths=" + ",".join(f"{name}={seconds:g}" for name, seconds in sorted(options["lengths"].items())))
     if options.get("ai_framing"):
         args.append(f"--ai-framing={options['ai_framing']}")
+    if options.get("ai_scout") is not None:
+        args.append("--ai-scout" if options["ai_scout"] else "--no-ai-scout")
     if options.get("ai_model"):
         args.append(f"--ai-model={options['ai_model']}")
     if options.get("ai_reasoning") is not None:

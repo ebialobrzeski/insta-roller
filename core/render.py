@@ -26,15 +26,16 @@ def _wrap_expr(expr: str) -> str:
     return f"mod(mod(({expr})+180,360)+360,360)-180"
 
 
-def sendcmd_script(keyframes: list[Keyframe], with_ev: bool = False) -> str:
+def sendcmd_script(keyframes: list[Keyframe], with_ev: bool = False, flat: str = FLAT, ev: str = EV) -> str:
     """Commands that move the camera between keyframes with a smoothstep ease.
-    Dense keyframes (a levelled horizon) are joined linearly instead."""
+    Dense keyframes (a levelled horizon) are joined linearly instead.
+    flat / ev: the names of the filters to command (a split frame has two of each)."""
     dense = len(keyframes) > 2 and max(b.t - a.t for a, b in zip(keyframes, keyframes[1:])) <= 1.0
     ease = "TI" if dense else "(TI*TI*(3-2*TI))"
-    params = [("yaw", FLAT, "yaw", True), ("pitch", FLAT, "pitch", False),
-              ("roll", FLAT, "roll", True), ("fov", FLAT, "d_fov", False)]
+    params = [("yaw", flat, "yaw", True), ("pitch", flat, "pitch", False),
+              ("roll", flat, "roll", True), ("fov", flat, "d_fov", False)]
     if with_ev:
-        params.append(("ev", EV, "exposure", False))
+        params.append(("ev", ev, "exposure", False))
     lines = []
     for a, b in zip(keyframes, keyframes[1:]):
         if b.t - a.t < 1e-3:
@@ -55,9 +56,10 @@ def sendcmd_script(keyframes: list[Keyframe], with_ev: bool = False) -> str:
 OUTPUT = {"flat": "flat", "planet": "sg", "fisheye": "fisheye", "pano": "e"}     # v360 names; pano = the whole sphere
 
 
-def flat_filter(first: Keyframe | Preset, width: int, height: int, projection: str = "flat") -> str:
+def flat_filter(first: Keyframe | Preset, width: int, height: int, projection: str = "flat", name: str = FLAT) -> str:
     projection = getattr(first, "projection", projection)
-    return (f"{FLAT}=input=e:output={OUTPUT[projection]}:w={width}:h={height}:d_fov={first.fov:g}"
+    field = "h_fov=360:v_fov=180" if projection == "pano" else f"d_fov={first.fov:g}"     # pano = the whole sphere
+    return (f"{name}=input=e:output={OUTPUT[projection]}:w={width}:h={height}:{field}"
             f":yaw={_wrap(first.yaw):.4f}:pitch={first.pitch:g}:roll={_wrap(first.roll):g}:reset_rot=1:interp=cubic")
 
 
@@ -117,7 +119,7 @@ def render_shot(shot: FramedShot, plan: FramingPlan, ctx: Context, handles_s: fl
         rec = rec if ctx.source == "proxy" else rec.best()
     source = rec.source_graph(ctx.mount, level)
 
-    with_ev = any(abs(k.ev) > 1e-6 for k in shot.keyframes)
+    with_ev = any(abs(k.ev) > 1e-6 for k in [*shot.keyframes, *shot.second])
     out_s = shot.duration_s / shot.speed
     frames = b""
     if ctx.telemetry is not None and profile.overlay.enabled and shot.speed == 1.0:
@@ -132,15 +134,23 @@ def render_shot(shot: FramedShot, plan: FramingPlan, ctx: Context, handles_s: fl
         out.touch()
         return out
 
-    script = shots_dir / f"{key}.cmd"
-    script.write_text(sendcmd_script(shot.keyframes, with_ev), encoding="ascii")
-    chain = [f"sendcmd=f={script.name}", flat_filter(shot.keyframes[0], plan.width, plan.height, shot.projection)]
-    if with_ev:
-        chain.append(f"{EV}=exposure={shot.keyframes[0].ev:.3f}")
-    chain.append("format=yuv420p")
-    if shot.speed != 1.0:
-        chain.append(f"setpts=PTS/{shot.speed:g}")
-    graph = f"{source};{EQ}{','.join(chain)}[v0]"
+    def pane(frames: list[Keyframe], height: int, projection: str, number: int) -> str:
+        """The filter chain of one picture of the frame, with its own commands."""
+        flat, ev = (FLAT, EV) if number == 0 else (f"v360@flat{number}", f"exposure@ev{number}")
+        script = shots_dir / f"{key}_{number}.cmd"
+        script.write_text(sendcmd_script(frames, with_ev, flat, ev), encoding="ascii")
+        chain = [f"sendcmd=f={script.name}", flat_filter(frames[0], plan.width, height, projection, flat)]
+        if with_ev:
+            chain.append(f"{ev}=exposure={frames[0].ev:.3f}")
+        return ",".join(chain)
+
+    tail = ["format=yuv420p"] + ([f"setpts=PTS/{shot.speed:g}"] if shot.speed != 1.0 else [])
+    if shot.second:                             # split frame: two views of the same moment, one above the other
+        top, bottom = plan.height // 2, plan.height - plan.height // 2
+        graph = (f"{source};{EQ}split=2[eqa][eqb];[eqa]{pane(shot.keyframes, top, shot.projection, 0)}[pa];"
+                 f"[eqb]{pane(shot.second, bottom, 'flat', 1)}[pb];[pa][pb]vstack=inputs=2,{','.join(tail)}[v0]")
+    else:
+        graph = f"{source};{EQ}{pane(shot.keyframes, plan.height, shot.projection, 0)},{','.join(tail)}[v0]"
     inputs = ["-t", f"{shot.duration_s:.3f}", *rec.input_args(work, start, shot.duration_s)]
     if frames:
         w, h = overlay.canvas_size(profile.overlay, plan.width)

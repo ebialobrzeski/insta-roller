@@ -6,6 +6,8 @@ flight summary) may reuse scenes of the others.
 """
 from __future__ import annotations
 
+import hashlib
+
 from .config import Mount, Profile, Theme
 from .contracts import ReelEntry, ReelPlan, Scene, Shot
 
@@ -57,20 +59,26 @@ def speed_of(scene: Scene, profile: Profile, theme: Theme) -> float:
 
 def plan_reel(scenes: list[Scene], profile: Profile, theme: Theme, mount: Mount,
               target_length_s: float, used: frozenset[str] = frozenset(),
-              barred: frozenset[str] = frozenset()) -> ReelPlan:
-    """Lengths are output seconds; a sped-up shot uses speed times as much source."""
+              barred: frozenset[str] = frozenset(), take: int = 0) -> ReelPlan:
+    """Lengths are output seconds; a sped-up shot uses speed times as much source.
+    take > 0 makes the reel anew: the scores are nudged (the same way every time for
+    one take) and the framings start further down their list."""
     types = profile.scene_types
     pool = [s for s in scenes if s.type in theme.include and s.type in types
             and s.type not in barred and (theme.borrows or s.id not in used)]
 
     turn: dict[str, int] = {}
 
-    def framing(s: Scene) -> list[str]:
+    def framing(s: Scene) -> tuple[list[str], list[str], float | None]:
+        """(views, views of a second picture, own speed) for the next shot of this scene's type."""
         options = theme.variants.get(s.type)
         if options:                             # each shot of a type takes the next variant
-            turn[s.type] = turn.get(s.type, -1) + 1
-            return resolve_framing(options[turn[s.type] % len(options)], s, mount)
-        return resolve_framing(theme.framing.get(s.type, types[s.type].framing), s, mount)
+            turn[s.type] = turn.get(s.type, take - 1) + 1
+            option = options[turn[s.type] % len(options)]
+            if isinstance(option, list):
+                return resolve_framing(option, s, mount), [], None
+            return resolve_framing(option.views, s, mount), resolve_framing(option.second, s, mount), option.speed
+        return resolve_framing(theme.framing.get(s.type, types[s.type].framing), s, mount), [], None
 
     def span(s: Scene) -> float:
         return (s.end_s - s.start_s) / speed_of(s, profile, theme)
@@ -99,7 +107,8 @@ def plan_reel(scenes: list[Scene], profile: Profile, theme: Theme, mount: Mount,
 
     def worth(s: Scene) -> float:
         gap = min((abs(place[s.id] - place[c.id]) for c in chosen), default=1.0)
-        return s.score * types[s.type].weight * (1 - SPREAD + SPREAD * min(gap / reach, 1.0))
+        nudge = 1.0 if take == 0 else 0.7 + 0.6 * (int(hashlib.sha1(f"{s.id}/{take}".encode()).hexdigest()[:6], 16) / 0xFFFFFF)
+        return s.score * types[s.type].weight * (1 - SPREAD + SPREAD * min(gap / reach, 1.0)) * nudge
 
     def fits(s: Scene) -> float | None:
         room = span(s)
@@ -135,15 +144,17 @@ def plan_reel(scenes: list[Scene], profile: Profile, theme: Theme, mount: Mount,
 
     shots: list[Shot] = []
     for s in sorted(chosen, key=_order):
-        speed = speed_of(s, profile, theme)
-        length = round(lengths[s.id] * speed, 2)                 # source seconds
+        views, second, own_speed = framing(s)
+        speed = own_speed or speed_of(s, profile, theme)
+        room = s.end_s - s.start_s - (ending[2] if ending and s.id == ending[0].id else 0.0)
+        length = round(min(lengths[s.id] * speed, room), 2)                 # source seconds
         start = _window(s, length, types[s.type].anchor)
         if ending and s.id == ending[0].id:
             start = min(start, ending[1] - length)
         if shots and shots[-1].recording == s.recording:        # never show the same footage twice
             start = min(max(start, shots[-1].start_s + shots[-1].duration_s), s.end_s - length)
         shots.append(Shot(index=0, scene_id=s.id, type=s.type, start_s=round(max(start, s.start_s), 2),
-                          duration_s=length, framing=framing(s), recording=s.recording, speed=speed,
+                          duration_s=length, framing=views, second=second, recording=s.recording, speed=speed,
                           attrs={k: v for k, v in s.attrs.items() if k.startswith(("yaw_", "pitch_", "track_"))}))
     if ending:
         scene, start, length = ending
@@ -152,7 +163,7 @@ def plan_reel(scenes: list[Scene], profile: Profile, theme: Theme, mount: Mount,
                           framing=resolve_framing([theme.ending.preset], scene, mount)))
     for i, shot in enumerate(shots):
         shot.index = i + 1
-    return ReelPlan(theme=theme.name, title=theme.title, target_length_s=target_length_s,
+    return ReelPlan(theme=theme.name, title=theme.title, target_length_s=target_length_s, take=take,
                     length_s=round(sum(s.duration_s / s.speed for s in shots), 2), shots=shots)
 
 
@@ -179,9 +190,10 @@ def base_theme(name: str) -> tuple[str, int]:
 
 
 def plan_reels(scenes: list[Scene], profile: Profile, themes: list[Theme], mount: Mount,
-               length_s: float | None = None) -> tuple[list[ReelPlan], list[ReelEntry]]:
+               length_s: float | None = None, takes: dict[str, int] | None = None) -> tuple[list[ReelPlan], list[ReelEntry]]:
     """One reel per enabled theme with enough material, or `count` reels of it, each from
-    scenes the earlier ones left. length_s overrides every theme's own length."""
+    scenes the earlier ones left. length_s overrides every theme's own length.
+    takes: reel name -> which take of it to plan (see plan_reel)."""
     barred = frozenset(barred_types(themes))
     used: set[str] = set()
     plans: list[ReelPlan] = []
@@ -202,7 +214,7 @@ def plan_reels(scenes: list[Scene], profile: Profile, themes: list[Theme], mount
             if have < max(theme.min_material_s, MIN_SHOT_S):
                 entry.reason = f"not enough material ({have:.0f}s of {theme.min_material_s:g}s needed)"
                 continue
-            plan = plan_reel(pool, profile, theme, mount, target, taken, barred)
+            plan = plan_reel(pool, profile, theme, mount, target, taken, barred, (takes or {}).get(name, 0))
             if not plan.shots:
                 entry.reason = "no scene fits the length"
                 continue

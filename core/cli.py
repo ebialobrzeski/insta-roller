@@ -51,6 +51,8 @@ class Job:
             self.profile.ai_framing.model = args.ai_model
         if getattr(args, "ai_reasoning", None) is not None:
             self.profile.ai_framing.reasoning_tokens = max(args.ai_reasoning, 0)
+        if getattr(args, "ai_scout", None) is not None:
+            self.profile.ai_framing.scout = args.ai_scout
         self.mount = load_mount(args.mount or self.profile.mount)
         self.length = args.length
         self._recordings: list[Recording] | None = None
@@ -183,7 +185,9 @@ def step_analyze(job: Job) -> Scenes:
                      {k: v.base_score for k, v in profile.scene_types.items()},
                      profile.thermal_good_climb_ms, profile.thermal_low_agl_m, profile.thermal_low_bonus,
                      profile.sync.model_dump_json(), job.args.offset, job.args.video_start,
-                     job.mount.model_dump_json(include={"calibration"}), 3)
+                     job.mount.model_dump_json(include={"calibration"}),
+                     profile.ai_framing.model_dump_json(include={"scout", "scout_every_s", "scout_max", "scout_apart_s", "model"})
+                     if profile.ai_framing.scout and profile.ai_framing.engine == "openrouter" else "", 5)
     path = job.path("scenes.json")
     if path.exists() and job.path("telemetry.json").exists() and not job.args.force:
         cached = contracts.read(path, Scenes)
@@ -242,6 +246,17 @@ def step_analyze(job: Job) -> Scenes:
         span = "gyroscope only"
     else:
         sys.exit(f"No IGC file, no GPS and no gyroscope data for {rec.id}: nothing to find scenes with.")
+    home = None
+    if fixes and samples:                       # heading and position, for views held on the world
+        from . import heading as heading_
+        ft = np.array([f.t for f in fixes])
+        flat, flon = np.array([f.lat for f in fixes]), np.array([f.lon for f in fixes])
+        at = np.array([x.t for x in samples]) + start
+        gyro = (cam.imu[:, 0] + start, telemetry.turn_about_vertical(cam.imu)) if cam.has_imu else (None, None)
+        where = heading_.headings(ft, flat, flon, at, *gyro)
+        for x, h, la, lo in zip(samples, where, np.interp(at, ft, flat), np.interp(at, ft, flon)):
+            x.heading_deg, x.lat, x.lon = round(float(h) % 360, 1), round(float(la), 6), round(float(lo), 6)
+        home = [fixes[0].lat, fixes[0].lon, fixes[0].alt]
     scenes, missing = build_scenes(phases, start, rec.duration_s, profile)
     scenes = split_long(scenes, profile.detection.split_long_s)
     cal = rec.calibration(job.mount)
@@ -257,13 +272,21 @@ def step_analyze(job: Job) -> Scenes:
                 scene.attrs["level"] = [float(v) for v in f]
         print(f"analyze: camera position found from its sensors for {len(known)} of {len(scenes)} scenes"
               + ("" if known else "; the mount's fixed angles are used"))
+    if profile.ai_framing.scout and profile.ai_framing.engine == "openrouter" and scenes:
+        from . import aiframe, scout                # a model looks through the whole flight for sights
+        print("analyze: looking through the flight for sights", flush=True)
+        try:
+            scenes = sorted(scenes + scout.scout(rec, job.mount, profile, scenes, rec.duration_s, job.work, job.log),
+                            key=lambda x: x.start_s)
+        except (aiframe.Unavailable, RuntimeError) as error:
+            print(f"scout: {error}; no sights were looked for")
     info = RecordingInfo(id=rec.id, kind=rec.kind, files=[f.name for f in rec.files],
                          duration_s=round(rec.duration_s, 2), start_utc=start)
     result = Scenes(fingerprint=fp, recording=info, recordings=[info], source=source,
                     sync=Sync(video_start_utc=start, offset_s=job.args.offset, method=method, correlation=correlation),
                     missing_phases=missing, scenes=scenes)
     contracts.write(path, result)
-    contracts.write(job.path("telemetry.json"), Telemetry(source=source, samples=samples))
+    contracts.write(job.path("telemetry.json"), Telemetry(source=source, samples=samples, home=home))
 
     names = {"igc": f"IGC {igc.name}" if igc else "", "camera_gps": "GPS remote data in the camera file",
              "gyro": "no IGC and no GPS"}
@@ -292,7 +315,14 @@ def step_plan(job: Job) -> list[FramingPlan]:
         from . import holiday
         plans, entries = holiday.plan(job, scenes)
     else:
-        plans, entries = plan_reels(scenes.scenes, job.profile, job.themes, job.mount, job.length)
+        takes = {}                                  # a reel asked to be made anew keeps its take number in its plan
+        for path in job.out.glob("reel_plan_*.json"):
+            try:
+                old = contracts.read(path, ReelPlan)
+                takes[old.theme] = old.take
+            except Exception:
+                pass
+        plans, entries = plan_reels(scenes.scenes, job.profile, job.themes, job.mount, job.length, takes)
     tele_path = job.path("telemetry.json")
     tele = contracts.read(tele_path, Telemetry) if tele_path.exists() else None
     calibration = job.recordings[0].calibration(job.mount) if job.profile.kind != "flight" \
@@ -303,12 +333,17 @@ def step_plan(job: Job) -> list[FramingPlan]:
     framings = []
     ai_ctx = job.context(scenes) if job.profile.ai_framing.engine != "off" else None
     themes = {t.name: t for t in job.themes}
+    shown: list[str] = []                       # what the reels planned so far show, for the AI
     for reel, entry in zip(plans, [e for e in entries if e.status == "planned"]):
         reel_path = job.path(f"reel_plan_{entry.tag}.json")
         framing_path = job.path(f"framing_plan_{entry.tag}.json")
         # A reel plan edited by hand (or in the scene review) is kept as it is.
         if reel_path.exists() and not job.args.force:
             old = contracts.read(reel_path, ReelPlan)
+            if old.removed:                         # taken out in the review: its plan stays, no reel is made
+                entry.status, entry.reason = "skipped", "removed by hand"
+                print(f"plan: {entry.tag}: removed by hand")
+                continue
             if old.edited:
                 reel = old
                 entry.length_s, entry.shots = reel.length_s, len(reel.shots)
@@ -316,7 +351,11 @@ def step_plan(job: Job) -> list[FramingPlan]:
             from . import aiframe
             from .reel import base_theme
             theme = themes.get(base_theme(reel.theme)[0]) or (job.themes[0] if job.profile.kind != "flight" else None)
-            reel = aiframe.apply(reel, scenes.scenes, job.profile, job.mount, theme, ai_ctx)
+            reel = aiframe.apply(reel, scenes.scenes, job.profile, job.mount, theme, ai_ctx, elsewhere=list(shown))
+            shown += [f"{reel.title or reel.theme}: " + ", ".join(
+                " -> ".join(n if n not in (s.attrs.get("views") or {}) else
+                            f"own view yaw {s.attrs['views'][n]['yaw']:.0f} pitch {s.attrs['views'][n]['pitch']:.0f}" for n in s.framing)
+                + (" + split frame" if s.second else "") for s in reel.shots)]
         framing = plan_framing(reel, job.profile, job.mount, tele, calibration)
         # An unchanged reel plan keeps its framing plan, so manual edits survive.
         if framing_path.exists() and not job.args.force:
@@ -330,10 +369,10 @@ def step_plan(job: Job) -> list[FramingPlan]:
         for s in reel.shots:
             print(f"  {s.index:>2}. {_hms(s.start_s)}  {s.duration_s / s.speed:>5.1f}s  {s.type:<10} {' -> '.join(s.framing)}")
     for entry in entries:
-        if entry.status != "planned":
+        if entry.status != "planned" and entry.reason != "removed by hand":
             print(f"plan: {entry.tag}: no reel, {entry.reason}")
     contracts.write(job.path("reels.json"), ReelSet(reels=entries))
-    if not plans:
+    if not any(e.status == "planned" for e in entries):
         sys.exit("No reel could be planned: no usable scenes for the chosen themes inside the recording.")
     job.note("plan", reels=[e.tag for e in entries if e.status == "planned"])
     return framings
@@ -446,6 +485,8 @@ def main(argv: list[str] | None = None) -> None:
                        help="a model picks the framing of every shot: local = CLIP on this PC, "
                             "openrouter = a vision model via the OpenRouter API (stills leave the PC; "
                             "needs OPENROUTER_API_KEY). Default: from the profile")
+        p.add_argument("--ai-scout", action=argparse.BooleanOptionalAction, default=None,
+                       help="openrouter: also look through the whole recording for sights worth a shot (more requests)")
         p.add_argument("--ai-model", help="openrouter: the model, e.g. anthropic/claude-sonnet-5.5 (default: from the profile)")
         p.add_argument("--ai-reasoning", type=int, metavar="TOKENS",
                        help="openrouter: tokens the model may spend reasoning before it answers; 0 = none")

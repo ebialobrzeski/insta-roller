@@ -7,9 +7,12 @@ max_per_type: {thermal: 4}
 variants:
   thermal:
     - [ground_inner, wing_inner]    # from the ground below up to the wing
+    - [hold_inner]                  # the landscape stands still, the glider turns through the picture
+    - {views: [wing_inner], second: [pilot_half]}   # split frame: the view above, the pilot below
     - [front_in, wing_inner]
     - [pilot_close]
     - [back_outer, pilot]
+    - [home]                        # the picture stays on the airfield
     - [wing_inner, back_inner]
 target_length_s: 30
 min_material_s: 15

@@ -8,11 +8,20 @@ include: [takeoff, tow, climb, thermal, glide]
 max_per_type: {tow: 1, climb: 1, thermal: 3, glide: 2}
 # The shots of one type take these framings in turn.
 variants:
-  takeoff: [[bubble]]
+  takeoff: [[planet, planet_front]]                       # the reel opens as a planet that unrolls into the runway
   tow:     [[bubble_front]]
   climb:   [[bubble_front]]
-  thermal: [[planet, planet_front], [around], [bubble]]   # the planet unrolls into the view ahead
-  glide:   [[bubble_front], [barrel]]
+  thermal:
+    - {views: [hold_inner], speed: 8}                     # a whole thermal in seconds, the landscape held still
+    - [ground_inner, wing_inner, sky_inner]               # one sweep from the ground through the horizon to the sky
+    - [around]
+    - [planet, planet_front]                              # the planet unrolls into the view ahead
+    - [bubble]
+  glide:
+    - {views: [front_half], second: [pilot_half]}         # two views at once
+    - [barrel]
 speed: {tow: 6, climb: 6}       # the launch as a time-lapse
+# ... and closes as a planet again.
+ending: {preset: planet, duration_s: 4}
 target_length_s: 35
 min_material_s: 12

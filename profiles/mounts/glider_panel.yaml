@@ -42,3 +42,18 @@ presets:
   around:       {yaw: 0,   pitch: 5,   fov: 125, horizon: locked, pan_dps: 30}
   # barrel: the picture rolls once all the way over.
   barrel:       {yaw: 0,   pitch: 0,   fov: 125, roll_turns: 1}
+  # Views only a 360 camera gives.
+  # hold_*: the picture keeps its compass direction while the glider turns: in a thermal
+  # the landscape stands still and the wing, the nose and the pilot pass through the frame.
+  hold_left:    {yaw: -95, pitch: 2,  fov: 112, horizon: locked, world: true, safe_zone: false}
+  hold_right:   {yaw: 95,  pitch: 2,  fov: 112, horizon: locked, world: true, safe_zone: false}
+  # home: the picture stays on the airfield the flight began from, wherever the glider points.
+  home:         {yaw: 0,   pitch: 0,  fov: 95,  horizon: locked, target: home, safe_zone: false}
+  # Straight up past the wing: the last step of a sweep from the ground to the sky.
+  sky_left:     {yaw: -100, pitch: 55, fov: 115, safe_zone: false}
+  sky_right:    {yaw: 100,  pitch: 55, fov: 115, safe_zone: false}
+  # Halves of a split frame (two views at once, one above the other).
+  front_half:   {yaw: 0,   pitch: -3, fov: 105, horizon: locked, safe_zone: false}
+  pilot_half:   {yaw: 180, pitch: 2, fov: 100, exposure_ev: 0.2, safe_zone: false}
+  # Aimed at what the model saw (yaw and pitch come with the scene), with a slow push in.
+  sight:        {yaw: 0, pitch: 0, fov: 88, fov_end: 72, horizon: locked, track: sight, safe_zone: false}

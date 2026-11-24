@@ -157,6 +157,22 @@ Two presets with the `planet` projection in one shot unroll the small planet
 into a normal view. Themes list several framings per scene type in `variants`,
 so the shots of a reel are not all framed alike.
 
+### What only a 360 camera gives
+
+- **Views held on the world** (flight, needs the log). `world: true` on a preset keeps the compass
+  direction the view starts with: in a thermal the landscape stands still and the glider turns
+  through the picture (`hold_left`, `hold_right`). `target: home` keeps the picture on the place
+  the flight began from (`home`). The heading comes from the log and the gyroscope together
+  (`core/heading.py`) and is kept in `telemetry.json` with the position.
+- **Split frame.** A variant written as `{views: [...], second: [...]}` cuts the frame in two:
+  two directions of the same moment, one above the other.
+- **A speed of its own.** `{views: [hold_inner], speed: 8}` makes one shot a time-lapse; with a
+  held view a whole thermal passes in seconds while the landscape stays put.
+- **Sights.** With `--ai-scout` (or `ai_framing.scout`, or the switch in the app's settings) a
+  vision model is shown the whole sphere every `scout_every_s` seconds of the flight and picks
+  the moments worth a shot of their own; they become scenes of the type `sight`, aimed at
+  what it saw (`core/scout.py`).
+
 ### AI framing
 
 `--ai-framing local|openrouter` (or `ai_framing.engine` in the profile, or the
@@ -174,7 +190,9 @@ of the shot.
   full 360 sphere and gets, for every shot, the whole sphere as a panorama
   with a grid of angles plus the ready-made views. It aims the camera itself:
   any yaw, pitch and field of view, a slow zoom or pan, a projection, one to
-  three views in a row, with the rhythm of the whole film in mind. In a second
+  three views in a row, with the rhythm of the whole film in mind. It sees the
+  start, the middle and the end of every shot, may hold a view on a compass
+  direction or on the airfield, and may split the frame in two. In a second
   round it sees what its own views really show and aims the poor ones again.
   Shots of the pilot / holder (`ai_framing.person_shots`, default 2) and
   showpieces such as the small planet (`ai_framing.accents`, default 2) are

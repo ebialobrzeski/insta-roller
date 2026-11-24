@@ -1,7 +1,8 @@
 # Mount "motoszybowiec, owiewka": camera on the canopy, roughly in the middle,
 # seats side by side. Angles are first guesses: check them with
 # `insta-roller preview <folder> --profile flight_motor` on a real recording.
-# yaw 0 = nose, +90 = right wing, 180 = back towards the crew.
+# yaw 0 = nose, +90 = right wing. On the flight these were checked with, the camera sat to the
+# right of the pilot, who is then at about yaw -100; with the camera elsewhere, change the seats.
 name: motorglider_canopy
 
 calibration:
@@ -20,9 +21,9 @@ presets:
   front:       {yaw: 0,    pitch: 5,   fov: 115}
   front_level: {yaw: 0,    pitch: 5,   fov: 115, horizon: locked}
   instruments: {yaw: 0,    pitch: -45, fov: 90,  exposure_ev: 0.2}
-  left_seat:   {yaw: 155,  pitch: -15, fov: 95,  exposure_ev: 0.2}
+  left_seat:   {yaw: -100, pitch: -10, fov: 95,  exposure_ev: 0.2}
   right_seat:  {yaw: -155, pitch: -15, fov: 95,  exposure_ev: 0.2}
-  crew:        {yaw: 180,  pitch: -10, fov: 140, exposure_ev: 0.15}
+  crew:        {yaw: -110, pitch: -8,  fov: 130, exposure_ev: 0.15}
   back_left:   {yaw: -120, pitch: 5,   fov: 125}
   back_right:  {yaw: 120,  pitch: 5,   fov: 125}
   wing_left:   {yaw: -100, pitch: 8,   fov: 115}
@@ -30,7 +31,7 @@ presets:
   # Moves inside one framing and unusual views, as in glider_panel (first guesses).
   front_in:     {yaw: 0,   pitch: 5,   fov: 115, fov_end: 92,  horizon: locked}
   front_out:    {yaw: 0,   pitch: 5,   fov: 92,  fov_end: 122, horizon: locked}
-  pilot_close:  {yaw: 155, pitch: -15, fov: 100, fov_end: 80,  exposure_ev: 0.2}
+  pilot_close:  {yaw: -100, pitch: -8, fov: 100, fov_end: 80,  exposure_ev: 0.2}
   ground_left:  {yaw: -95, pitch: -40, fov: 105}
   ground_right: {yaw: 95,  pitch: -40, fov: 105}
   planet:       {yaw: 0,   pitch: -90, fov: 300, projection: planet,  safe_zone: false, pan_dps: 12}
@@ -39,3 +40,18 @@ presets:
   bubble_front: {yaw: 0,   pitch: 0,   fov: 220, projection: fisheye, safe_zone: false}
   around:       {yaw: 0,   pitch: 5,   fov: 125, horizon: locked, pan_dps: 30}
   barrel:       {yaw: 0,   pitch: 5,   fov: 125, roll_turns: 1}
+  # Views only a 360 camera gives.
+  # hold_*: the picture keeps its compass direction while the glider turns: in a thermal
+  # the landscape stands still and the wing, the nose and the pilot pass through the frame.
+  hold_left:    {yaw: -95, pitch: 2,  fov: 112, horizon: locked, world: true, safe_zone: false}
+  hold_right:   {yaw: 95,  pitch: 2,  fov: 112, horizon: locked, world: true, safe_zone: false}
+  # home: the picture stays on the airfield the flight began from, wherever the glider points.
+  home:         {yaw: 0,   pitch: 0,  fov: 95,  horizon: locked, target: home, safe_zone: false}
+  # Straight up past the wing: the last step of a sweep from the ground to the sky.
+  sky_left:     {yaw: -100, pitch: 55, fov: 115, safe_zone: false}
+  sky_right:    {yaw: 100,  pitch: 55, fov: 115, safe_zone: false}
+  # Halves of a split frame (two views at once, one above the other).
+  front_half:   {yaw: 0,   pitch: -3, fov: 105, horizon: locked, safe_zone: false}
+  pilot_half:   {yaw: -100, pitch: -6, fov: 100, exposure_ev: 0.2, safe_zone: false}
+  # Aimed at what the model saw (yaw and pitch come with the scene), with a slow push in.
+  sight:        {yaw: 0, pitch: 0, fov: 88, fov_end: 72, horizon: locked, track: sight, safe_zone: false}

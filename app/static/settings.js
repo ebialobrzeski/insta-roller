@@ -49,6 +49,9 @@ export async function show(view) {
       h("small", {class: "muted"}, "Puste pole: anthropic/claude-sonnet-5.5. Zacznij pisać, żeby wybrać inny z listy OpenRouter.")),
     h("label", {class: "field mt"}, "Ile AI może się namyślać (tokeny)", thinking,
       h("small", {class: "muted"}, "0 = odpowiada od razu. Więcej = lepiej przemyślane rolki, ale drożej i dłużej.")),
+    h("label", {class: "switch mt"}, h("input", {type: "checkbox", checked: !!s.ai_scout, onchange: e => put({ai_scout: e.target.checked}, "Zapisano")}),
+      h("span", {}, "AI szuka też ciekawych widoków w całym nagraniu",
+        h("small", {}, "Co półtorej minuty lotu pokazuję modelowi całą panoramę, a on wskazuje jeziora, miasta, chmury warte osobnego ujęcia. Kilka dodatkowych zapytań na lot."))),
     h("button", {class: "btn mt", type: "button", onclick: () => put({ai_model: model.value.trim(), ai_reasoning: +thinking.value || 0}, "Zapisano ustawienia AI")}, "Zapisz"));
   const fill = guard(async () => { if (models.children.length) return; const list = (await api("/api/ai/models")).models || []; models.replaceChildren(...list.map(m => h("option", {value: m.id}, `${m.name}${m.reasoning ? " · z namysłem" : ""} · $${m.prompt_usd_per_m} za mln tokenów`))); });
   if (s.ai_framing === "openrouter") fill();

@@ -62,3 +62,5 @@ scene_types:
   glide:   {weight: 0.7, base_score: 0.5, min_shot_s: 4, max_shot_s: 8,  anchor: center, framing: [pilot_wide, front]}
   circuit: {weight: 0.8, base_score: 0.7, min_shot_s: 4, max_shot_s: 8,  anchor: end, framing: [front]}
   landing: {weight: 1.0, base_score: 1.0, min_shot_s: 6, max_shot_s: 12, anchor: end, framing: [front]}
+  # A moment a vision model picked for what is to be seen outside (ai_framing.scout).
+  sight:   {weight: 1.0, base_score: 0.8, min_shot_s: 4, max_shot_s: 7,  anchor: center, framing: [sight]}

@@ -413,8 +413,9 @@ def test_ai_openrouter_aims_the_camera_itself_and_bad_answers_are_ignored(scenes
         Image.new("RGB", (32, 32), "blue").save(folder / "x.jpg")
         return {name: folder / "x.jpg" for name in presets}
     monkeypatch.setattr(aiframe, "_stills", stills)
-    monkeypatch.setattr(aiframe, "_pano", lambda shot, ctx, folder: stills(shot, ["p"], ctx, folder)["p"])
+    monkeypatch.setattr(aiframe, "_pano", lambda shot, ctx, folder, part=0.5: stills(shot, ["p"], ctx, folder)["p"])
     monkeypatch.setattr(aiframe, "_own_stills", lambda shot, own, ctx, folder: stills(shot, list(own), ctx, folder))
+    monkeypatch.setattr(aiframe, "blocked_zones", lambda *a, **k: {})        # no mount in the way in this test
     by_id = {s.id: s for s in scenes}
     themes = [load_theme(n) for n in profile.themes]
     names, extra = aiframe.views(reel.shots[0], by_id[reel.shots[0].scene_id], profile, theme, mount, themes)
@@ -459,6 +460,16 @@ def test_ai_openrouter_aims_the_camera_itself_and_bad_answers_are_ignored(scenes
         {"shot": 5, "views": [letter["wing_left"], {"yaw": 175, "pitch": 5, "fov": 100}]}]})
     found = aiframe.parse_reply(reply, batch, profile, mount, False, 1, 1)
     assert sorted(found) == [1, 4, 5] and found[5][0] == ["wing_left"]      # the second pilot view is dropped from its path
+    # With the flight log, a view may be held on the world; a shot may be a split frame.
+    held = [{**b, "world": True} for b in batch[:2]]
+    reply = json.dumps({"shots": [
+        {"shot": 1, "views": [{"yaw": -90, "pitch": 0, "fov": 110, "hold": True, "pan": 40}]},
+        {"shot": 2, "views": [letter["wing_left"]], "second": [{"yaw": 0, "pitch": -5, "fov": 100, "look_at": "airfield"}]}]})
+    found = aiframe.parse_reply(reply, held, profile, mount, False, 2, 1)
+    own = found[1][2]["ai1a"]
+    assert own["world"] is True and own["horizon"] == "locked" and "pan_dps" not in own
+    assert found[2][3] == ["ai2b"] and found[2][2]["ai2b"]["target"] == "home"
+    assert "world" not in aiframe.parse_reply(reply, batch[:2], profile, mount, False, 2, 1)[1][2]["ai1a"]   # no log: an ordinary view
     aiframe.apply(reel, scenes, profile, mount, theme, ctx, post=post)
     assert len(seen) == 2                                           # first answer + review; cached after that
 
@@ -484,7 +495,7 @@ def test_ai_engine_that_cannot_run_keeps_the_theme_framing(scenes, profile, moun
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.setattr(aiframe, "PROFILES_DIR", tmp_path / "profiles")
     monkeypatch.setattr(aiframe, "_stills", lambda shot, presets, ctx, folder: {})
-    monkeypatch.setattr(aiframe, "_pano", lambda shot, ctx, folder: None)
+    monkeypatch.setattr(aiframe, "_pano", lambda shot, ctx, folder, part=0.5: None)
     said = []
     out = aiframe.apply(reel, scenes, profile, mount, theme, SimpleNamespace(work=tmp_path), progress=said.append)
     assert out == reel and "OPENROUTER_API_KEY" in said[0]
@@ -545,3 +556,143 @@ def test_a_found_nose_turns_the_picture(tmp_path):
     assert "yaw=0:" in plain and "pitch=1.1:roll=-108.5:rorder=rpy" in turned
     assert f"yaw={(ingest.NOSE_SIGN * -54.5 + ingest.NOSE_OFFSET + 180) % 360 - 180:g}:" in turned
     assert mount.calibration["dual_fisheye"].auto_nose and not load_mount("glider_panel").calibration["dual_fisheye"].auto_nose
+
+
+def test_the_panorama_for_the_ai_is_the_whole_sphere():
+    from core import render
+    from core.contracts import Keyframe
+    view = Keyframe(t=0, yaw=0, pitch=0, roll=0, fov=100)
+    pano = render.flat_filter(view, 1024, 512, "pano")
+    assert "output=e" in pano and "h_fov=360:v_fov=180" in pano and "d_fov" not in pano    # its grid is labelled -180..180
+    assert "d_fov=100" in render.flat_filter(view, 1080, 1920)
+
+
+def test_another_take_of_a_reel_chooses_differently_and_repeats_itself(profile, mount):
+    scenes = [Scene(id=f"{i:03d}_{kind}", type=kind, start_s=i * 300.0, end_s=i * 300.0 + 120, score=0.5,
+                    attrs={"direction": "left"}) for i in range(20) for kind in ("thermal", "glide")]
+    theme = load_theme("thermal")
+    first, _ = plan_reels(scenes, profile, [theme], mount)
+    again, _ = plan_reels(scenes, profile, [theme], mount, takes={"thermal": 1})
+    same, _ = plan_reels(scenes, profile, [theme], mount, takes={"thermal": 1})
+    ids = lambda plans: [s.scene_id for s in plans[0].shots]
+    assert ids(first) != ids(again) and ids(again) == ids(same)            # new, but not random: planning twice agrees
+    assert again[0].take == 1 and first[0].take == 0
+    assert [s.framing for s in again[0].shots][0] != [s.framing for s in first[0].shots][0]
+
+
+# --- views only a 360 camera gives -------------------------------------------------
+def _turning(seconds=40, rate=12.0, step=0.0001):
+    """A steady right turn: the heading grows by `rate` degrees a second."""
+    samples = [TelemetrySample(t=float(t), speed_kmh=90, alt_m=1000, vario_ms=1.0, bank_deg=30,
+                               heading_deg=(rate * t) % 360, lat=53.0 + step * t, lon=23.0) for t in range(seconds + 1)]
+    return Telemetry(source="igc", samples=samples, home=[53.0, 23.0, 150.0])
+
+
+def test_a_held_view_stays_on_its_compass_direction_while_the_glider_turns(profile, mount):
+    tele = _turning()
+    reel = ReelPlan(theme="x", target_length_s=10, length_s=10, shots=[
+        Shot(index=1, scene_id="a", type="thermal", start_s=5, duration_s=10, framing=["hold_left"]),
+        Shot(index=2, scene_id="a", type="thermal", start_s=5, duration_s=10, framing=["wing_left"])])
+    held, fixed = plan_framing(reel, profile, mount, tele).shots
+    start, end = held.keyframes[0], held.keyframes[-1]
+    assert abs((end.yaw - start.yaw) - (-12.0 * 10)) < 1.0                 # 120 degrees of turn, undone by the view
+    assert max(b.t - a.t for a, b in zip(held.keyframes, held.keyframes[1:])) <= 0.5       # dense enough to look smooth
+    assert abs(fixed.keyframes[-1].yaw - fixed.keyframes[0].yaw) < 1e-6      # an ordinary view stays with the aircraft
+    without = plan_framing(reel, profile, mount, Telemetry(source="gyro", samples=[
+        TelemetrySample(t=float(t), speed_kmh=90, alt_m=1000, vario_ms=1, bank_deg=30) for t in range(41)])).shots[0]
+    assert abs(without.keyframes[-1].yaw - without.keyframes[0].yaw) < 1e-6  # no heading in the data: nothing to hold on
+
+
+def test_the_home_view_looks_at_where_the_flight_began(profile, mount):
+    tele = _turning(rate=0.0, step=0.0003)          # flying north, 800 m from the start by now, 850 m above it
+    reel = ReelPlan(theme="x", target_length_s=6, length_s=6, shots=[
+        Shot(index=1, scene_id="a", type="glide", start_s=20, duration_s=6, framing=["home"])])
+    frames = plan_framing(reel, profile, mount, tele).shots[0].keyframes
+    middle = frames[len(frames) // 2]
+    assert abs((middle.yaw + 180) % 360 - 180) > 175 and -70 < middle.pitch < -35      # behind and well below the horizon
+    near = plan_framing(reel.model_copy(update={"shots": [reel.shots[0].model_copy(update={"start_s": 0})]}), profile, mount, tele)
+    assert abs(near.shots[0].keyframes[0].yaw) < 1e-6                       # still on the airfield: nothing to aim at
+
+
+def test_a_split_frame_has_two_cameras_and_two_filter_chains(profile, mount, tmp_path):
+    from core import render
+    reel = ReelPlan(theme="x", target_length_s=6, length_s=6, shots=[
+        Shot(index=1, scene_id="a", type="glide", start_s=0, duration_s=6, framing=["front_half"], second=["pilot_half"])])
+    shot = plan_framing(reel, profile, mount).shots[0]
+    assert shot.second and abs(shot.second[0].yaw) == 180 and abs(shot.keyframes[0].yaw) < 1
+    top = render.sendcmd_script(shot.keyframes)
+    bottom = render.sendcmd_script(shot.second, flat="v360@flat1", ev="exposure@ev1")
+    assert "v360@flat " in top and "v360@flat1 " in bottom and "v360@flat " not in bottom
+    theme = load_theme("glide_views")
+    split = [o for o in theme.variants["glide"] if not isinstance(o, list)]
+    assert split and split[0].second == ["pilot_half"]
+
+
+def test_heading_follows_the_gyroscope_and_does_not_drift_from_the_log():
+    from core import heading
+    t = np.arange(0, 600.0)
+    true = 20.0 * np.sin(t / 40) * 4 + 0.5 * t                  # weaving and slowly turning
+    lat = np.cumsum(np.cos(np.radians(true))) * 25 / 111000 + 53
+    lon = np.cumsum(np.sin(np.radians(true))) * 25 / (111000 * np.cos(np.radians(53))) + 23
+    gyro_t = np.arange(0, 600, 0.02)
+    rate = np.gradient(np.interp(gyro_t, t, true), gyro_t) + 0.3            # a gyroscope that drifts 0.3 deg/s
+    found = heading.headings(t, lat, lon, t, gyro_t, rate)
+    assert np.abs(found[60:-60] - true[60:-60]).max() < 12                  # the drift (180 degrees by the end) is gone
+    bearing, down, distance = heading.bearing_down(53.01, 23.0, 1150.0, (53.0, 23.0, 150.0))
+    assert abs(bearing - 180) < 1 and 35 < down < 50 and 1000 < distance < 1200
+
+
+def test_scouting_turns_the_best_moments_into_sight_scenes(profile, mount, tmp_path, monkeypatch):
+    from PIL import Image
+    from core import render, scout
+    profile = profile.model_copy(deep=True)
+    profile.ai_framing.engine, profile.ai_framing.scout = "openrouter", True
+    profile.ai_framing.scout_every_s, profile.ai_framing.scout_max = 100.0, 2
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test")
+    monkeypatch.setattr(render, "still", lambda rec, mount, at, view, size, out, *a, **k: Image.new("RGB", size, "blue").save(out) or out)
+    scenes = [Scene(id="000_glide", type="glide", start_s=0, end_s=1000, score=0.5, attrs={"level": [1.0, 2.0, 3.0]})]
+    assert scout.moments(scenes, 100.0) == [50.0, 150.0, 250.0, 350.0, 450.0, 550.0, 650.0, 750.0, 850.0, 950.0]
+    asked = []
+
+    def post(body):
+        asked.append(body)
+        assert sum(part["type"] == "image_url" for part in body["messages"][0]["content"]) == 10
+        return json.dumps({"moments": [{"n": 1, "score": 3, "what": "pola"}, {"n": 2, "score": 9, "what": "jezioro", "yaw": 200, "pitch": -30},
+                                       {"n": 3, "score": 8, "what": "to samo jezioro", "yaw": -100}, {"n": 8, "score": 7, "what": "miasto"},
+                                       {"n": 99, "score": 10}, {"n": 4, "score": "x"}]})
+    rec = Recording("x", "dual_fisheye", [tmp_path / "a.lrv"], [1000.0], None, (2880, 1440))
+    found = scout.scout(rec, mount, profile, scenes, 1000.0, tmp_path, tmp_path / "log", post=post, progress=lambda text: None)
+    assert [(s.type, s.attrs["what"], s.start_s, s.end_s) for s in found] == [("sight", "jezioro", 144.0, 156.0), ("sight", "miasto", 744.0, 756.0)]
+    assert found[0].attrs["yaw_sight"] == -160.0 and found[0].attrs["pitch_sight"] == -30.0 and found[0].attrs["level"] == [1.0, 2.0, 3.0]
+    assert found[0].score > found[1].score                                  # the better sight is the better scene
+    scout.scout(rec, mount, profile, scenes, 1000.0, tmp_path, tmp_path / "log", post=post, progress=lambda text: None)
+    assert len(asked) == 1                                                  # remembered: no second request
+    reel = ReelPlan(theme="x", target_length_s=5, length_s=5, shots=[
+        Shot(index=1, scene_id=found[0].id, type="sight", start_s=146, duration_s=5, framing=["sight"],
+             attrs={k: v for k, v in found[0].attrs.items() if k.startswith(("yaw_", "pitch_"))})])
+    first = plan_framing(reel, profile, mount).shots[0].keyframes[0]
+    assert abs(first.yaw - -160.0) < 1e-6 and abs(first.pitch - -30.0) < 1e-6          # the view is aimed at what was seen
+
+
+def test_a_view_that_catches_the_camera_mount_is_moved_or_refused(profile, mount):
+    from core import aiframe, blocked
+    zones = [{"what": "suction mount", "yaw": [35, 75], "pitch": [0, 40]}]
+    assert blocked.share(zones, 55, 20, 80) > 0.3 and blocked.share(zones, -90, 0, 80) == 0.0
+    assert blocked.share([{"what": "x", "yaw": [170, -170], "pitch": [-10, 10]}], 180, 0, 60) > 0.1      # a zone across the seam
+    assert blocked.clear(zones, -90, 0, 80) == (-90, 0, 80)                 # clear already: untouched
+    yaw, pitch, fov = blocked.clear(zones, 40, -10, 90)
+    assert blocked.share(zones, yaw, pitch, fov) <= blocked.CLEAR and abs(yaw - 40) <= 40 and fov <= 90
+    assert blocked.clear([{"what": "wall", "yaw": [-60, 60], "pitch": [-60, 60]}], 0, 0, 80) is None     # no way round it
+    assert blocked.parse('{"zones": [{"what": "mount", "yaw": [35, 75], "pitch": [40, 0]}, {"what": "all", "yaw": [-180, 180], "pitch": [-90, 90]},'
+                         ' {"yaw": "x"}]}') == [{"what": "mount", "yaw": [35.0, 75.0], "pitch": [0.0, 40.0]}]
+    assert blocked.position_key(None) == ("fixed",) and blocked.position_key([1.0, -108.0, -51.6]) == blocked.position_key([3.0, -110.0, -51.6])
+    # In the answer of the model: the view is turned away from the zone, its sweep into the zone is stopped.
+    shot = Shot(index=1, scene_id="a", type="glide", start_s=0, duration_s=6, framing=["front"])
+    item = {"shot": shot, "names": ["front", "wing_left"], "extra": set(), "stills": {}, "panos": [], "zones": zones}
+    reply = json.dumps({"shots": [{"shot": 1, "views": [{"yaw": 50, "pitch": 15, "fov": 90, "pan": 30}]}]})
+    path, _, own, _ = aiframe.parse_reply(reply, [item], profile, mount, False, 1, 1)[1]
+    view = own[path[0]]
+    assert blocked.share(zones, view["yaw"], view["pitch"], view["fov"]) <= blocked.CLEAR
+    walled = {**item, "zones": [{"what": "wall", "yaw": [-150, 150], "pitch": [-80, 80]}]}
+    reply = json.dumps({"shots": [{"shot": 1, "views": [{"yaw": 0, "pitch": 0, "fov": 90}, "B"]}]})
+    assert aiframe.parse_reply(reply, [walled], profile, mount, False, 1, 1)[1][0] == ["wing_left"]      # the blocked view is left out

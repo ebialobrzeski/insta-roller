@@ -68,6 +68,7 @@ class JobOptions(BaseModel):
     ai_framing: Literal["off", "local", "openrouter"] | None = None   # None = as the profile says
     ai_model: str = Field("", max_length=120, pattern=r"^[\w.:/@-]*$")  # OpenRouter model; empty = as the profile says
     ai_reasoning: int | None = Field(None, ge=0, le=200_000)          # reasoning tokens; None = as the profile says
+    ai_scout: bool | None = None            # the AI also looks through the whole recording for sights
     review: bool = False                    # stop after analysis + plan for the scene review
     shots: bool = False                     # also export the separate shots
     films: bool = True                      # False = "same ujęcia": the separate shots, no finished film
@@ -90,6 +91,7 @@ class Settings(BaseModel):
     ai_framing: Literal["", "off", "local", "openrouter"] = ""
     ai_model: str = Field("", max_length=120, pattern=r"^[\w.:/@-]*$")
     ai_reasoning: int = Field(0, ge=0, le=200_000)
+    ai_scout: bool = False                  # with the remote AI: look through the whole recording for sights
 
 
 class Text(BaseModel):
@@ -111,6 +113,7 @@ class RenderAsk(BaseModel):
 
 class ResetAsk(BaseModel):
     tags: list[str] = Field(max_length=64)                      # reels to plan again, automatically
+    again: bool = False                                         # True = "make it anew": other moments and framings
 
 
 class PreviewAsk(BaseModel):
@@ -516,7 +519,7 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
             people += [n for n in p.get("people", []) if n not in people]
         return {"profiles": found, "people": [n for n in people if n], "stitcher": stitcher() is not None,
                 "quality": settings()["quality"],
-                "ai": {k: settings()[k] for k in ("ai_framing", "ai_model", "ai_reasoning")},
+                "ai": {k: settings()[k] for k in ("ai_framing", "ai_model", "ai_reasoning", "ai_scout")},
                 "mounts": each("mounts", lambda m: {"presets": list(m.presets)}),
                 "themes": each("themes", lambda t: {"title": t.title, "enabled": t.enabled,
                                                     "length": t.target_length_s})}
@@ -558,6 +561,8 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
             options["ai_model"] = chosen["ai_model"]
         if options["ai_reasoning"] is None and chosen["ai_reasoning"]:
             options["ai_reasoning"] = chosen["ai_reasoning"]
+        if options["ai_scout"] is None and chosen["ai_scout"] and options["ai_framing"] == "openrouter":
+            options["ai_scout"] = True
         current = queue.find(str(folder))
         if options["out"].strip():
             out = absolute(options["out"])
@@ -655,7 +660,9 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
             plan = read_json(path)
             if plan is None:
                 raise HTTPException(404, f"Nie ma rolki '{tag}'")
-            plan["edited"] = False
+            plan["edited"], plan["removed"] = False, False
+            if body.again:
+                plan["take"] = int(plan.get("take") or 0) + 1
             path.write_text(json.dumps(plan, indent=2, ensure_ascii=False), "utf-8")
         return change(job_id, lambda: queue.restart(job_id, ["plan", "thumbnails"], "review", job["options"]))
 
@@ -814,7 +821,8 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
         profile, mount = job_config(job)
         listed = []
         for entry in reels.get("reels", []):
-            plan = read_json(out / f"reel_plan_{entry['tag']}.json") if entry.get("status") == "planned" else None
+            known = entry.get("status") == "planned" or entry.get("reason") == "removed by hand"
+            plan = read_json(out / f"reel_plan_{entry['tag']}.json") if known else None
             listed.append({**entry, "plan": plan})
         return {"job": view(job, 12), "reels": listed,
                 "scenes": [{**s, "thumb": (out / "review" / f"{s['id']}.jpg").exists(),
@@ -833,15 +841,17 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
         out = out_dir(job)
         scenes = {s["id"]: s for s in (read_json(out / "scenes.json") or {}).get("scenes", [])}
         planned = {r["tag"] for r in (read_json(out / "reels.json") or {}).get("reels", [])
-                   if r.get("status") == "planned"}
+                   if r.get("status") == "planned" or r.get("reason") == "removed by hand"}
         _, mount = job_config(job)
         plans = {}
         for tag, shots in body.reels.items():
             plan = read_json(out / f"reel_plan_{tag}.json") if tag in planned else None
             if plan is None:
                 raise HTTPException(404, f"Nie ma rolki '{tag}'")
-            if not shots:
-                raise HTTPException(422, f"Rolka {tag} nie może być pusta; wyłącz jej temat w zadaniu")
+            if not shots:                           # "Usuń rolkę": its plan stays as it was, it is just not made
+                plan.update(removed=True, edited=True)
+                plans[tag] = plan
+                continue
             old = {(s["scene_id"], s["start_s"], s["duration_s"]) for s in plan["shots"]}
             fixed = []
             for index, shot in enumerate(shots, 1):
@@ -865,9 +875,11 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
                 if (scene["id"], start, length) not in old:         # a changed shot stays inside its scene
                     length = round(min(max(length, speed), scene["end_s"] - scene["start_s"]), 2)
                     start = round(min(max(start, scene["start_s"]), scene["end_s"] - length), 2)
+                lower = [str(n) for n in shot.get("second") or [] if not mount or n in mount.presets or n in own]
+                shot = {**shot, "second": lower}
                 fixed.append({**shot, "index": index, "start_s": start, "duration_s": length, "speed": speed,
                               "framing": framing, "recording": scene.get("recording", "")})
-            plan.update(shots=fixed, edited=True,
+            plan.update(shots=fixed, edited=True, removed=False,
                         length_s=round(sum(s["duration_s"] / s["speed"] for s in fixed), 2))
             try:
                 from core.contracts import ReelPlan

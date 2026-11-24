@@ -108,6 +108,12 @@ class AiFraming(Strict):
     variety: float = 0.08               # local: what a framing loses each time the reel already used it
     brief: str = ""                     # openrouter: one more sentence of instructions
     accents: int = 2                    # openrouter: unusual shots (planet, fisheye, roll) allowed in an ordinary reel
+    # openrouter: also look through the whole recording for sights (core/scout.py): one panorama
+    # every scout_every_s seconds is shown to the model; the best become scenes of the type "sight".
+    scout: bool = False
+    scout_every_s: float = 90.0
+    scout_max: int = 8
+    scout_apart_s: float = 150.0
     person_shots: int = 2               # openrouter: shots of a reel that may show the pilot / the holder
     # local: sentences a good / a poor still is compared with
     good: list[str] = ["a beautiful scenic photo with a clear subject and a visible horizon",
@@ -160,6 +166,11 @@ class Preset(Strict):
     # flat = an ordinary lens; planet = the whole surroundings wrapped into a ball
     # (stereographic); fisheye = a very wide round view without stretched edges.
     projection: Literal["flat", "planet", "fisheye"] = "flat"
+    # A view held on the world instead of on the aircraft (needs the flight log):
+    # world = keep the compass direction the view has when the shot starts, so the aircraft
+    # turns under a still picture; target = keep looking at a place ("home": where the flight began).
+    world: bool = False
+    target: Literal["", "home"] = ""
 
 
 class Calibration(Strict):
@@ -189,6 +200,13 @@ class Ending(Strict):
     duration_s: float
 
 
+class Variant(Strict):
+    """One way to frame a scene type, when a plain list of views is not enough."""
+    views: list[str]
+    second: list[str] = []              # a second picture under the first (split frame), its own views
+    speed: float | None = None          # playback speed of this shot (a time-lapse)
+
+
 class Theme(Strict):
     name: str
     title: str = ""
@@ -200,7 +218,7 @@ class Theme(Strict):
     framing: dict[str, list[str]] = {}  # per scene type, replaces the profile's framing
     # Several framings per scene type, taken in turn by the shots of that type,
     # so a reel does not show the same trick twice in a row. Wins over `framing`.
-    variants: dict[str, list[list[str]]] = {}
+    variants: dict[str, list[list[str] | Variant]] = {}
     speed: dict[str, float] = {}        # per scene type, replaces the profile's playback speed
     target_length_s: float | None = None
     min_material_s: float = 0.0         # less usable footage than this: no reel

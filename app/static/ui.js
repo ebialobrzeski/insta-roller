@@ -143,6 +143,7 @@ const TYPES = {takeoff: "Start", tow: "Hol", release: "Wyczepienie", climb: "Wzn
                thermal: "Komin", glide: "Przelot", circuit: "Krąg", landing: "Lądowanie", ending: "Zakończenie",
                view: "Widok", walk: "Spacer", holder: "Ty w kadrze", companion: "Towarzysz", panorama: "Panorama"};
 export function shotName(type, attrs = {}) {
+  if (type === "sight") return attrs.what ? `Widok: ${attrs.what}` : "Widok wypatrzony przez AI";
   const base = TYPES[type] || type;
   const more = [];
   if (type === "thermal") {
@@ -164,6 +165,9 @@ const PRESETS = {front: "przód", front_level: "przód, równy horyzont", pilot:
                  ground_left: "ziemia z lewej", ground_right: "ziemia z prawej", planet: "mała planeta",
                  planet_front: "planeta → przód", planet_view: "planeta → widok", bubble: "rybie oko, osoba",
                  bubble_front: "rybie oko, przód", bubble_view: "rybie oko, widok", around: "obrót dookoła", barrel: "beczka",
+                 hold_left: "krajobraz w miejscu (lewo)", hold_right: "krajobraz w miejscu (prawo)", home: "na lotnisko",
+                 sky_left: "niebo z lewej", sky_right: "niebo z prawej", front_half: "przód (pół kadru)", pilot_half: "pilot (pół kadru)",
+                 sight: "widok wypatrzony przez AI",
                  view_in: "widok, zbliżenie", view_out: "widok, oddalenie", holder_out: "ty, oddalenie"};
 export const presetName = id => PRESETS[id] || (/^ai\d+[a-z]$/.test(id) ? "kadr AI" : id);
 
@@ -189,6 +193,7 @@ export function skipText(reason = "") {
   const short = /not enough material \((\d+)s(?: of (\d+)s needed)?\)/.exec(reason);
   if (short) return short[2] ? `za mało materiału: jest ${short[1]} s pasujących momentów, potrzeba ${short[2]} s.` : `za mało materiału (${short[1]} s).`;
   if (/switched off/.test(reason)) return "ten rodzaj rolki jest wyłączony.";
+  if (/removed by hand/.test(reason)) return "usunięta przez Ciebie przy sprawdzaniu ujęć. Możesz ją tam przywrócić.";
   if (/no scene fits/.test(reason)) return "żaden moment nie mieści się w tej długości. Wydłuż rolkę.";
   if (/no usable material/.test(reason)) return "nie ma pasujących momentów.";
   return reason || "bez podanego powodu.";
@@ -231,6 +236,9 @@ const SAID = [
   [/^analyze: matching the video/, "Dopasowuję nagranie do zapisu lotu"],
   [/^analyze: finding the phases/, "Szukam faz lotu: startu, kominów, przelotów"],
   [/^analyze: camera position found/, "Ustaliłem, jak była ustawiona kamera"],
+  [/^analyze: looking through the flight/, "AI przegląda cały lot w poszukiwaniu widoków"],
+  [/shot (\d+)\/(\d+)\s+scout/, m => `Panorama ${m[1]} z ${m[2]} dla AI`],
+  [/^scout: looked at (\d+) moments, kept (\d+)/, m => `AI wypatrzyło ${m[2]} widoków wartych ujęcia`],
   [/^analyze: (\d+) scenes/, m => `Znalazłem ${m[1]} momentów`],
   [/^people: looking for/, "Szukam znajomych twarzy w nagraniach"],
   [/^ai framing: downloading/, "Pobieram model AI (jednorazowo)"],

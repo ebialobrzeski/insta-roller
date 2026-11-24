@@ -159,5 +159,12 @@ def calibrate(imu: np.ndarray, spans: list[tuple[float, float]],
                     whole[k] = found[0] if found and found[1] >= 0.5 else None
             yaw = whole[k]
         tilt = level(acc, max(start, lo), min(end, hi)) if min(end, hi) - max(start, lo) >= 3 else level(acc, start, end)
-        out.append(None if tilt is None or yaw is None else (tilt[0], tilt[1], yaw))
-    return out
+        out.append(None if tilt is None or yaw is None else (tilt[0], tilt[1], yaw, k))
+    # The nose does not wander while the camera stays put: every scene filmed from one
+    # position takes the middle of the directions found there (single estimates scatter).
+    middle_of: dict[int, float] = {}
+    for k in {f[3] for f in out if f is not None}:
+        angles = np.radians([f[2] for f in out if f is not None and f[3] == k])
+        centre = np.arctan2(np.median(np.sin(angles)), np.median(np.cos(angles)))
+        middle_of[k] = round(float(np.degrees(centre)), 1)
+    return [None if f is None else (f[0], f[1], middle_of[f[3]]) for f in out]

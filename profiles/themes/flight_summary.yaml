@@ -3,10 +3,11 @@
 name: flight_summary
 title: Skrót lotu
 borrows: true
-include: [takeoff, tow, release, climb, engine_off, thermal, glide, circuit, landing]
-max_per_type: {tow: 1, climb: 1, thermal: 3, glide: 2, circuit: 1}
+include: [takeoff, tow, release, climb, engine_off, thermal, glide, sight, circuit, landing]
+max_per_type: {tow: 1, climb: 1, thermal: 3, glide: 2, sight: 2, circuit: 1}
 variants:
   thermal:
+    - [hold_inner]
     - [ground_inner, wing_inner]
     - [pilot_wide, wing_inner]
     - [front_in]

@@ -206,7 +206,12 @@ def test_review_edit_writes_an_edited_reel_plan(env):
     bad = {**glide, "framing": ["no_such_preset"]}
     assert client.put(f"{url}/review", json={"reels": {"thermal_30s": [bad]}}).status_code == 422
     assert client.put(f"{url}/review", json={"reels": {"thermal_30s": [{**glide, "scene_id": "x"}]}}).status_code == 422
-    assert client.put(f"{url}/review", json={"reels": {"thermal_30s": []}}).status_code == 422
+    # An empty reel is a reel taken out: its plan is kept, marked, and can come back.
+    assert client.put(f"{url}/review", json={"reels": {"thermal_30s": []}}).status_code == 200
+    gone = json.loads((out / "reel_plan_thermal_30s.json").read_text())
+    assert gone["removed"] is True and gone["edited"] is True and [s["scene_id"] for s in gone["shots"]] == ["002_glide"]
+    assert client.put(f"{url}/review", json={"reels": {"thermal_30s": [glide]}}).status_code == 200
+    assert json.loads((out / "reel_plan_thermal_30s.json").read_text())["removed"] is False
     assert client.put(f"{url}/review", json={"reels": {"landing_20s": [glide]}}).status_code == 404
     assert client.put(f"{url}/review", json={"reels": {"../../x": [glide]}}).status_code == 404
 
@@ -345,7 +350,7 @@ def test_custom_output_folder_goes_to_the_cli_as_out(env):
 def test_cache_folder_setting_goes_to_the_cli_as_work(env):
     client = env.client
     assert client.get("/api/settings").json() == {"work": "", "quality": "auto", "people_names": [],
-                                                  "ai_framing": "", "ai_model": "", "ai_reasoning": 0,
+                                                  "ai_framing": "", "ai_model": "", "ai_reasoning": 0, "ai_scout": False,
                                                   "data": str(env.data), "profiles": str(env.profiles)}
     work = env.tmp / "cache"
     assert client.put("/api/settings", json={"work": "cache"}).status_code == 400
@@ -362,7 +367,7 @@ def test_cache_folder_setting_goes_to_the_cli_as_work(env):
     assert env.client.put("/api/settings", json={"quality": "good"}).json()["work"] == str(work)     # one setting at a time
     assert env.client.put("/api/settings", json={"quality": "nonsense"}).status_code == 422
     assert env.client.put("/api/settings", json={"work": ""}).json() == {
-        "work": "", "quality": "good", "people_names": [], "ai_framing": "", "ai_model": "", "ai_reasoning": 0,
+        "work": "", "quality": "good", "people_names": [], "ai_framing": "", "ai_model": "", "ai_reasoning": 0, "ai_scout": False,
         "data": str(env.data), "profiles": str(env.profiles)}
     assert "--work" not in env.job()["commands"][0] and env.client.get("/api/meta").json()["quality"] == "good"
 
@@ -1155,7 +1160,7 @@ def test_settings_choose_the_ai_for_new_jobs_and_render_takes_a_quality(env):
     assert client.put("/api/settings", json={"ai_framing": "openrouter", "ai_model": "anthropic/claude-haiku-5.5",
                                              "ai_reasoning": 2000}).status_code == 200
     assert client.get("/api/meta").json()["ai"] == {"ai_framing": "openrouter", "ai_model": "anthropic/claude-haiku-5.5",
-                                                    "ai_reasoning": 2000}
+                                                    "ai_reasoning": 2000, "ai_scout": False}
     job = env.submit(profile="flight", review=True)
     assert "--ai-framing=openrouter" in job["commands"][1] and "--ai-model=anthropic/claude-haiku-5.5" in job["commands"][1]
     assert "--ai-reasoning=2000" in job["commands"][1]

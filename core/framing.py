@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
 from .config import Calibration, Mount, Preset, Profile, SafeZone
 from .contracts import FramedShot, FramingPlan, Keyframe, ReelPlan, Shot, Telemetry
 from .ingest import fingerprint
@@ -12,6 +14,7 @@ PITCH_UP = 1.0          # positive pitch looks up
 ROLL_FOR_BANK = -1.0    # view roll that levels a right bank when looking ahead
 PITCH_FOR_BANK = 1.0
 LEVEL_STEP_S = 0.5
+HOME_NEAR_M = 400.0     # closer to where the flight began than this, a view cannot be aimed at it
 
 
 def _shortest(prev_yaw: float, target: float) -> float:
@@ -120,23 +123,72 @@ def _at(frames: list[Keyframe], t: float) -> Keyframe:
     return frames[-1].model_copy(update={"t": t})
 
 
-def level_horizon(frames: list[Keyframe], locked: list[float], shot: Shot, telemetry: Telemetry,
-                  stabilized: bool) -> list[Keyframe]:
-    """Dense keyframes that hold the horizon level, or tie it to the aircraft on a
-    stabilised source, using the bank angle. locked[i] says how much the preset of
-    keyframe i wants a level horizon (1) or the aircraft's (0)."""
-    bank_at = {round(s.t): s.bank_deg for s in telemetry.samples}
-    weights = [Keyframe(t=f.t, yaw=w, pitch=0, roll=0, fov=1) for f, w in zip(frames, locked)]
+class Motion:
+    """What the aircraft does, at any video time: bank, heading, position."""
+
+    def __init__(self, telemetry: Telemetry | None):
+        samples = sorted(telemetry.samples, key=lambda x: x.t) if telemetry else []
+        self.t = np.array([x.t for x in samples])
+        self.bank = np.array([x.bank_deg for x in samples])
+        known = bool(samples) and all(x.heading_deg is not None and x.lat is not None for x in samples)
+        self.heading = np.degrees(np.unwrap(np.radians([x.heading_deg for x in samples]))) if known else None
+        self.lat = np.array([x.lat for x in samples]) if known else None
+        self.lon = np.array([x.lon for x in samples]) if known else None
+        self.alt = np.array([x.alt_m for x in samples])
+        self.home = tuple(telemetry.home) if telemetry and telemetry.home else None
+
+    def __bool__(self) -> bool:
+        return len(self.t) > 0
+
+    @property
+    def world(self) -> bool:
+        return self.heading is not None
+
+    def bank_at(self, t: float) -> float:
+        return float(np.interp(t, self.t, self.bank)) if len(self.t) else 0.0
+
+    def heading_at(self, t: float) -> float:
+        return float(np.interp(t, self.t, self.heading))
+
+    def home_at(self, t: float) -> tuple[float, float] | None:
+        """(yaw from the nose, pitch) at which the place the flight began is seen."""
+        if not self.world or self.home is None:
+            return None
+        from .heading import bearing_down
+        bearing, down, distance = bearing_down(float(np.interp(t, self.t, self.lat)), float(np.interp(t, self.t, self.lon)),
+                                               float(np.interp(t, self.t, self.alt)), self.home)
+        if distance < HOME_NEAR_M:                  # still on it (takeoff, landing): there is no direction to it
+            return None
+        return bearing - self.heading_at(t), -down * PITCH_UP
+
+
+def animate(frames: list[Keyframe], presets: list[Preset], shot: Shot, motion: Motion, stabilized: bool) -> list[Keyframe]:
+    """Dense keyframes for the things that follow the aircraft's motion through a shot:
+    a level horizon (or, on a stabilised source, the aircraft's own), a view held on a
+    compass direction, a view held on the place the flight began.
+    presets[i] is the preset keyframe i was made from (two keyframes each)."""
+    def weights(value) -> list[Keyframe]:
+        return [Keyframe(t=f.t, yaw=float(value(p)), pitch=0, roll=0, fov=1) for f, p in zip(frames, presets)]
+    locked = weights(lambda p: p.horizon == "locked")
+    held = weights(lambda p: p.world and motion.world)
+    aimed = weights(lambda p: p.target == "home" and motion.home_at(shot.start_s) is not None)
+    north = motion.heading_at(shot.start_s) if motion.world else 0.0
+    step = LEVEL_STEP_S / 2 if any(w.yaw for w in held + aimed) else LEVEL_STEP_S
     out, t = [], 0.0
     while True:
         t = min(t, shot.duration_s)
         base = _at(frames, t)
-        lock = _at(weights, t).yaw
         video_t = shot.start_s + t
-        lo = math.floor(video_t)
-        b0 = bank_at.get(lo, 0.0)
-        bank = b0 + (bank_at.get(lo + 1, b0) - b0) * (video_t - lo)
+        hold, aim = _at(held, t).yaw, _at(aimed, t).yaw
+        if hold > 0:                                # the aircraft turns, the picture does not
+            base.yaw -= hold * (motion.heading_at(video_t) - north)
+        if aim > 0 and motion.home_at(video_t) is not None:    # the picture stays on one place on the ground
+            yaw, pitch = motion.home_at(video_t)
+            base.yaw += aim * ((yaw - base.yaw + 180) % 360 - 180)
+            base.pitch += aim * (pitch - base.pitch)
+        lock = _at(locked, t).yaw
         amount = -(1.0 - lock) if stabilized else lock      # a stabilised source needs the bank put back
+        bank = motion.bank_at(video_t)
         psi = math.radians(base.yaw)
         base.roll += ROLL_FOR_BANK * amount * bank * math.cos(psi)
         base.pitch += PITCH_FOR_BANK * amount * bank * math.sin(psi)
@@ -144,7 +196,7 @@ def level_horizon(frames: list[Keyframe], locked: list[float], shot: Shot, telem
         out.append(base)
         if t >= shot.duration_s:
             return out
-        t += LEVEL_STEP_S
+        t += step
 
 
 def shot_mount(mount: Mount, shot: Shot) -> Mount:
@@ -161,6 +213,7 @@ def plan_framing(reel: ReelPlan, profile: Profile, mount: Mount, telemetry: Tele
     hand-edited framing plan only while that stays the same."""
     out = profile.output
     stabilized = bool(calibration and calibration.stabilized)
+    motion = Motion(telemetry)
     shots = []
     for s in reel.shots:
         own = shot_mount(mount, s)
@@ -171,21 +224,28 @@ def plan_framing(reel: ReelPlan, profile: Profile, mount: Mount, telemetry: Tele
             kept = [name for name in s.framing if own.presets[name].projection == first]
             print(f"plan: shot {s.index} ({s.scene_id}) mixed projections; kept {kept} of {s.framing}")
             s = s.model_copy(update={"framing": kept})
-        frames = frame_shot(s.framing, s.duration_s, own, profile.transition_s * s.speed, profile.safe_zone,
-                            (out.width, out.height), s.attrs, s.start_s,
-                            profile.max_turn_dps / s.speed, profile.max_track_dps / s.speed)
-        locked = [1.0 if own.presets[name].horizon == "locked" else 0.0 for name in s.framing for _ in (0, 1)]
-        needs = any(w == (0.0 if stabilized else 1.0) for w in locked)
-        if telemetry and telemetry.samples and needs:
-            frames = level_horizon(frames, locked, s, telemetry, stabilized)
+        def camera(names: list[str], size: tuple[int, int]) -> list[Keyframe]:
+            frames = frame_shot(names, s.duration_s, own, profile.transition_s * s.speed, profile.safe_zone,
+                                size, s.attrs, s.start_s, profile.max_turn_dps / s.speed, profile.max_track_dps / s.speed)
+            made = [own.presets[name] for name in names for _ in (0, 1)]
+            if len(made) != len(frames):            # a tracked view brings keyframes of its own: left as they are
+                return frames
+            level = any((p.horizon == "locked") != stabilized for p in made)
+            world = motion.world and any(p.world or p.target for p in made)
+            return animate(frames, made, s, motion, stabilized) if motion and (level or world) else frames
+
+        second = [n for n in s.second if n in own.presets and own.presets[n].projection == "flat"]
+        whole = (out.width, out.height)
+        half = (out.width, out.height // 2)
+        frames = camera(s.framing, half if second else whole)
         projections = {own.presets[name].projection for name in s.framing}
         shots.append(FramedShot(index=s.index, scene_id=s.scene_id, start_s=s.start_s, duration_s=s.duration_s,
                                 keyframes=frames, recording=s.recording, speed=s.speed, type=s.type,
-                                projection=projections.pop()))
+                                projection=projections.pop(), second=camera(second, half) if second else []))
     return FramingPlan(theme=reel.theme, length_s=reel.length_s, width=out.width, height=out.height,
                        fps=out.fps, shots=shots,
                        source=fingerprint(reel.model_dump_json(), mount.model_dump_json(), out.model_dump_json(),
                                           profile.safe_zone.model_dump_json(), profile.transition_s, stabilized,
                                           profile.max_turn_dps, profile.max_track_dps,
                                           telemetry.model_dump_json() if telemetry else "",
-                                          ROLL_FOR_BANK, PITCH_FOR_BANK, PITCH_UP))
+                                          ROLL_FOR_BANK, PITCH_FOR_BANK, PITCH_UP, "motion 2"))

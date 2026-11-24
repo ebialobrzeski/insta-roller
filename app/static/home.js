@@ -58,18 +58,23 @@ export function barogram(box, data) {
     const films = [...new Set(used.map(sh => { const [, base, part] = /^(.*?)(?:_p(\d+))?$/.exec(sh.theme || sh.reel); return (THEMES[base] || [base])[0] + (part ? ` ${part}` : ""); }))];
     cursor.setAttribute("x1", px); cursor.setAttribute("x2", px); cursor.setAttribute("visibility", "visible");
     dot.setAttribute("cx", px); dot.setAttribute("cy", y(alt)); dot.setAttribute("visibility", "visible");
-    tip.replaceChildren(
-      scene && scene.thumb && h("img", {alt: "", src: fileUrl(data.job, `review/${scene.id}.jpg`)}),
+    tip.replaceChildren(...[
+      scene && scene.thumb ? h("img", {alt: "", src: fileUrl(data.job, `review/${scene.id}.jpg`)}) : null,
       h("div", {},
         h("div", {class: "when"}, label(at - t0), scene && h("b", {}, shotName(scene.type, scene.attrs))),
         h("dl", {},
           h("dt", {}, "Wysokość"), h("dd", {}, `${Math.round(alt)} m`),
           speed != null && h("dt", {}, "Prędkość"), speed != null && h("dd", {}, `${Math.round(speed)} km/h`),
           vario != null && h("dt", {}, vario >= 0 ? "Wznoszenie" : "Opadanie"), vario != null && h("dd", {class: vario >= 0.2 ? "up" : vario <= -0.2 ? "down" : ""}, `${signed(vario)} m/s`)),
-        h("div", {class: films.length ? "in" : "in none"}, films.length ? `Ujęcie w: ${films.join(", ")}` : "Ten moment nie trafił do żadnego filmu")));
+        h("div", {class: films.length ? "in" : "in none"}, films.length ? `Ujęcie w: ${films.join(", ")}` : "Ten moment nie trafił do żadnej rolki"))].filter(Boolean));
     tip.hidden = false;
-    const width = tip.offsetWidth, left = px / W * box.clientWidth;
-    tip.style.left = `${Math.min(Math.max(left - width / 2, 0), box.clientWidth - width)}px`;
+    // Beside the cursor, never on it: to the right while there is room, else to the left;
+    // and on the half of the chart where the line is not (the line is high: the read-out sits low).
+    const width = tip.offsetWidth, height = tip.offsetHeight, left = px / W * box.clientWidth, gap = 16;
+    const room = box.clientWidth - left - gap >= width;
+    tip.style.left = `${Math.max(room ? left + gap : left - gap - width, 0)}px`;
+    const plot = svg.getBoundingClientRect().height, lineY = y(alt) / H * plot;
+    tip.style.top = `${lineY < plot / 2 ? Math.max(plot - height - 34, 0) : 0}px`;
   }
   function hide() { at = null; tip.hidden = true; cursor.setAttribute("visibility", "hidden"); dot.setAttribute("visibility", "hidden"); }
   const timeAt = e => { const r = svg.getBoundingClientRect(); return t0 + (e.clientX - r.left) / r.width * (t1 - t0); };

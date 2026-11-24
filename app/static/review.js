@@ -4,7 +4,7 @@ import {$, h, api, icon, guard, toast, seconds, clock, comma, shotName, presetNa
 import {live, watch, refresh, setContext} from "./live.js";
 
 const rv = {id: 0, data: null, reels: {}, dirty: new Set(), zones: false, view: null,
-            stills: new Map(), asked: [], clips: new Map(), active: new WeakMap(), pick: null, quality: null, status: null};
+            stills: new Map(), asked: [], clips: new Map(), active: new WeakMap(), pick: null, quality: null, status: null, removed: new Set()};
 // Seconds of work for one second of reel, by quality: orders of magnitude, not promises.
 const QUALITIES = [["best", "Najlepsza", 15], ["good", "Dobra", 5], ["fast", "Szybki podgląd", 1]];
 const about = s => s < 90 ? "około minuty" : s < 3600 ? `około ${Math.round(s / 60)} min` : `około ${(s / 3600).toFixed(1).replace(".", ",")} godz.`;
@@ -111,6 +111,9 @@ function shotCard(tag, shot, index) {
           h("button", {class: "name", type: "button", title: "Zmień kadr: wybierz z podglądów", onclick: () => openPicker(tag, shot, i)}, presetName(name)),
           shot.framing.length > 1 && h("button", {class: "x", type: "button", "aria-label": "Usuń ten kadr", onclick: () => { shot.framing.splice(i, 1); touch(tag); }}, "×"))),
         shot.framing.length < 3 && h("button", {class: "chip add", type: "button", onclick: () => { shot.framing.push(shot.framing[shot.framing.length - 1]); rv.dirty.add(tag); openPicker(tag, shot, shot.framing.length - 1); draw(); }}, "+ kadr"))),
+    shot.second && shot.second.length > 0 && h("p", {class: "why", style: "margin:0"}, h("b", {}, "Podwójny kadr. "), `Na dole: ${shot.second.map(presetName).join(" → ")}`,
+      h("button", {type: "button", class: "linklike", onclick: () => { shot.second = []; touch(tag); }}, "usuń dolny")),
+    shot.speed && shot.speed !== 1 && h("p", {class: "why", style: "margin:0"}, `Przyspieszone ${shot.speed}×`),
     others.length > 0 && h("select", {class: "move", "aria-label": "Przenieś do innej rolki", onchange: e => {
       if (!e.target.value) return;
       shots.splice(index, 1);
@@ -189,6 +192,24 @@ async function playReel(tag, title) {
   next();
 }
 
+// Take a reel out of the work, or put it back. Its shots are kept, so it can come back as it was.
+function removeReel(reel, out) {
+  if (out) rv.removed.add(reel.tag); else rv.removed.delete(reel.tag);
+  rv.dirty.add(reel.tag);
+  draw();
+}
+
+const againReel = (reel) => guard(async () => {
+  const changed = rv.dirty.has(reel.tag) || reel.plan.edited;
+  if (changed && !confirm(`Wygenerować rolkę „${reelTitle(reel)}” na nowo? Twoje zmiany w tej rolce przepadną.`)) return;
+  const others = [...rv.dirty].filter(tag => tag !== reel.tag);
+  if (others.length) await save();                      // what was changed elsewhere is kept
+  await api(`/api/jobs/${rv.id}/review/reset`, "POST", {tags: [reel.tag], again: true});
+  await refresh();
+  toast("Układam tę rolkę na nowo: inne momenty i inne kadry.");
+  return show(rv.view, rv.id);
+});
+
 const resetReel = (reel) => guard(async () => {
   if (!confirm(`Przywrócić automatyczny wybór ujęć w rolce „${reelTitle(reel)}”? Twoje zmiany w tej rolce przepadną.`)) return;
   if (reel.plan && reel.plan.edited) {                  // saved edits: the reel is planned again
@@ -199,32 +220,42 @@ const resetReel = (reel) => guard(async () => {
   }
   rv.reels[reel.tag] = reel.plan.shots.map(sh => ({...sh, framing: [...sh.framing]}));
   rv.dirty.delete(reel.tag);
+  if (reel.plan.removed) rv.removed.add(reel.tag); else rv.removed.delete(reel.tag);
   draw();
 });
 
 function reelRow(reel) {
   const shots = rv.reels[reel.tag];
   if (!shots) return h("div", {class: "row"}, h("div", {class: "cell tight muted"}, `Rolka „${reelTitle(reel)}” nie powstanie: ${REASONS[reel.reason] || skipText(reel.reason)}`));
+  if (rv.removed.has(reel.tag) || !shots.length) return h("div", {class: "row"}, h("div", {class: "cell tight"}, h("div", {class: "spread"},
+    h("div", {}, h("span", {class: "h3 muted", style: "text-decoration:line-through"}, reelTitle(reel)),
+      h("span", {class: "muted", style: "font-size:13px;margin-left:10px"}, shots.length ? "Nie zostanie zrobiona." : "Bez ujęć: nie zostanie zrobiona.")),
+    h("div", {class: "inline"},
+      shots.length > 0 && h("button", {class: "btn small", type: "button", onclick: () => removeReel(reel, false)}, "Przywróć"),
+      h("button", {class: "btn small", type: "button", onclick: againReel(reel)}, icon("refresh"), "Wygeneruj na nowo")))));
   const now = filmLength(shots), target = reel.plan.target_length_s, over = now > target * 1.15;
   return h("div", {class: "row"}, h("div", {class: "cell flush"},
     h("div", {style: "padding:24px 32px 16px"},
       h("div", {class: "spread"},
         h("h2", {class: "title"}, reelTitle(reel), rv.dirty.has(reel.tag) && h("span", {class: "live"}, "[ ZMIENIONE ]")),
         h("div", {class: "inline"},
-          (rv.dirty.has(reel.tag) || reel.plan.edited) && h("button", {class: "btn small quiet", type: "button", onclick: resetReel(reel)}, "Przywróć automatyczne"),
+          h("button", {class: "btn small quiet danger", type: "button", title: "Ta rolka nie zostanie zrobiona. Pozostałe tak.", onclick: () => removeReel(reel, true)}, "Usuń rolkę"),
+          (rv.dirty.has(reel.tag) || reel.plan.edited) && h("button", {class: "btn small quiet", type: "button", onclick: resetReel(reel)}, "Cofnij moje zmiany"),
+          h("button", {class: "btn small", type: "button", title: "Inne momenty i inne kadry w tej jednej rolce", onclick: againReel(reel)}, icon("refresh"), "Wygeneruj na nowo"),
           h("button", {class: "btn small", type: "button", disabled: !shots.length, onclick: () => playReel(reel.tag, reelTitle(reel))}, icon("play", "icon solid"), "Podgląd całej rolki"),
           h("div", {class: "mono"}, h("b", {style: "font-weight:500"}, seconds(now)), h("span", {class: "muted"}, ` z ${seconds(target)}`)))),
       h("div", {class: `lenbar${over ? " over" : ""}`}, h("i", {style: `width:${Math.min(now / target * 100, 100)}%`})),
       over && h("p", {class: "muted", style: "font-size:13px;margin-top:8px"}, "Rolka jest dłuższa, niż planowano. To nie błąd, ale możesz skrócić ujęcia.")),
-    shots.length ? h("div", {class: "strip", tabindex: 0, "aria-label": `Ujęcia filmu ${reelTitle(reel)}, po kolei`}, shots.map((shot, i) => shotCard(reel.tag, shot, i)))
-      : h("p", {class: "problem", style: "margin:0 32px 24px"}, h("b", {}, "Rolka nie może być pusta."), "Dodaj moment z listy poniżej albo kliknij „Przywróć automatyczne”.")));
+    h("div", {class: "strip", tabindex: 0, "aria-label": `Ujęcia rolki ${reelTitle(reel)}, po kolei`}, shots.map((shot, i) => shotCard(reel.tag, shot, i)))));
 }
 
 function draw() {
-  const used = new Set(Object.values(rv.reels).flat().map(s => s.scene_id)), open = rv.data.reels.filter(r => rv.reels[r.tag]);
+  const made = r => rv.reels[r.tag] && rv.reels[r.tag].length > 0 && !rv.removed.has(r.tag);       // the reels that will be made
+  const used = new Set(rv.data.reels.filter(made).flatMap(r => rv.reels[r.tag]).map(s => s.scene_id)), open = rv.data.reels.filter(r => rv.reels[r.tag]);
   const unused = rv.data.scenes.filter(s => !used.has(s.id)).sort((a, b) => b.score - a.score);
   const keep = [...rv.view.querySelectorAll(".strip")].map(s => s.scrollLeft), top = window.scrollY;
-  const empty = open.some(r => !rv.reels[r.tag].length) || open.some(r => rv.reels[r.tag].some(mixed));
+  const going = open.filter(made);
+  const empty = !going.length || going.some(r => rv.reels[r.tag].some(mixed));
   rv.view.classList.toggle("zones", rv.zones);
   rv.view.replaceChildren(
     flowSteps(3),
@@ -238,8 +269,8 @@ function draw() {
         h("div", {}, h("div", {style: "font-weight:500"}, shotName(scene.type, scene.attrs)), h("div", {class: "mono muted"}, `${clock(scene.start_s)} · ${seconds(scene.end_s - scene.start_s)}`)),
         h("select", {class: "move", "aria-label": "Dodaj do rolki", style: "margin:0;min-height:32px;padding:4px 8px;font-size:13px",
                      onchange: e => { if (e.target.value) place(e.target.value, {...scene.default, framing: [...scene.default.framing]}); }},
-          h("option", {value: ""}, "Dodaj do…"), open.map(r => h("option", {value: r.tag}, reelTitle(r))))))))),
-    finalBar(open, empty));
+          h("option", {value: ""}, "Dodaj do…"), open.filter(r => !rv.removed.has(r.tag)).map(r => h("option", {value: r.tag}, reelTitle(r))))))))),
+    finalBar(going, empty));
   rv.view.querySelectorAll(".strip").forEach((strip, i) => { strip.scrollLeft = keep[i] || 0; });
   window.scrollTo(0, top);
   fetchStills();
@@ -259,14 +290,15 @@ function finalBar(open, empty) {
     h("label", {class: "inline", style: "gap:8px;font-size:14px"}, "Jakość",
       h("select", {style: "min-height:40px", onchange: e => { rv.quality = e.target.value; draw(); }}, QUALITIES.map(([value, title]) =>
         h("option", {value, selected: value === quality, disabled: !can[value]}, can[value] ? title : `${title} (niedostępna)`)))),
-    h("span", {class: "muted", style: "font-size:13px"}, empty ? "Najpierw popraw rolki zaznaczone na czerwono." : `${n} ${n === 1 ? "rolka" : n < 5 ? "rolki" : "rolek"}, ${about(film * factor + 60)} pracy`),
+    h("span", {class: "muted", style: "font-size:13px"}, !n ? "Nie została żadna rolka do zrobienia." : empty ? "Najpierw popraw ujęcia zaznaczone na czerwono." : `${n} ${n === 1 ? "rolka" : n < 5 ? "rolki" : "rolek"}, ${about(film * factor + 60)} pracy`),
     rv.dirty.size > 0 && h("button", {class: "btn", type: "button", disabled: empty, onclick: guard(async () => { await save(); toast("Zapisane. Rolki zrobisz, kiedy zechcesz."); })}, "Zapisz i wróć później"),
     h("button", {class: "btn primary big", type: "button", disabled: empty, onclick: guard(() => render(quality))}, icon("film"), "Zrób rolki"));
 }
 
 async function save() {
   if (!rv.dirty.size) return;
-  await api(`/api/jobs/${rv.id}/review`, "PUT", {reels: Object.fromEntries([...rv.dirty].map(tag => [tag, rv.reels[tag]]))});
+  // A reel taken out (or left without shots) is sent empty: the server keeps its plan and does not make it.
+  await api(`/api/jobs/${rv.id}/review`, "PUT", {reels: Object.fromEntries([...rv.dirty].map(tag => [tag, rv.removed.has(tag) ? [] : rv.reels[tag]]))});
   await load();
 }
 
@@ -282,6 +314,7 @@ async function load() {
   rv.data = await api(`/api/jobs/${rv.id}/review`);
   rv.reels = {};
   rv.dirty.clear();
+  rv.removed = new Set(rv.data.reels.filter(r => r.plan && r.plan.removed).map(r => r.tag));
   for (const reel of rv.data.reels) if (reel.plan) rv.reels[reel.tag] = reel.plan.shots.map(s => ({...s, framing: [...s.framing]}));
   setContext(["Moje nagrania", `#filmy/${rv.id}`], rv.data.job.label || rv.data.job.name, "Ujęcia");
   draw();
@@ -325,7 +358,9 @@ export async function show(view, id) {
   };
   const job = live.jobs.find(j => j.id === id);
   const busy = j => j && (j.status === "running" || j.status === "queued");
-  if (busy(job) || (job && (job.status === "error" || job.status === "cancelled"))) waiting(job); else await open();
+  const stuck = j => j && (j.status === "error" || j.status === "cancelled");
+  if (busy(job)) waiting(job);
+  else { await open(); if (!shown && stuck(job)) waiting(job); }      // a stopped job with shots already chosen still shows them
   let last = job ? job.status : "";
   stop = watch(jobs => {                         // the shots open by themselves when the search is over
     const now = jobs.find(j => j.id === id);
@@ -333,8 +368,8 @@ export async function show(view, id) {
     if (!shown && busy(now)) { const text = view.querySelector("#rv-wait"); if (text) text.replaceChildren(...waitText(now)); }
     if (now.status !== last) {
       last = now.status;
-      if (busy(now) || now.status === "error" || now.status === "cancelled") { shown = false; waiting(now); }
-      else open();
+      if (busy(now)) { shown = false; waiting(now); }
+      else open().then(() => { if (!shown && stuck(now)) waiting(now); });
     }
   });
   return () => { if (stop) stop(); view.classList.remove("zones"); };

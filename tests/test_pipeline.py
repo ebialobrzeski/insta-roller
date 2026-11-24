@@ -115,7 +115,7 @@ def test_inner_wing_follows_the_circling_direction(flight, profile, theme, mount
     for shot in thermals:
         side = by_id[shot.scene_id].attrs["direction"]
         other = "right" if side == "left" else "left"
-        assert f"wing_{side}" in shot.framing                       # the inner wing is in every thermal shot
+        assert any(name.endswith(f"_{side}") for name in shot.framing)      # the shot looks to the inside of the turn
         assert not any(name.endswith(f"_{other}") for name in shot.framing)
 
 

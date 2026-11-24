@@ -29,6 +29,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import blocked
 from .config import PROFILES_DIR, Mount, Preset, Profile, Theme, load_theme
 from .contracts import Keyframe, ReelPlan, Scene, Shot
 from .framing import frame_shot
@@ -44,7 +45,7 @@ KEY_ENV = "OPENROUTER_API_KEY"
 BATCH = 30                      # shots per request: a whole reel, so the model sees the film as one
 MIN_VIEW_S = 2.5                # a view in a sequence needs at least this long
 ANSWER_TOKENS = 8000           # room for the answer itself, on top of the reasoning budget
-PROMPT = 6                      # raised when the instructions change, so cached answers are not reused
+PROMPT = 9                      # raised when the instructions change, so cached answers are not reused
 
 
 class Unavailable(RuntimeError):
@@ -52,6 +53,11 @@ class Unavailable(RuntimeError):
 
 
 # --- candidates ---------------------------------------------------------------------------
+def _lists(options) -> list[list[str]]:
+    """The views of every variant of a theme, whether it is written as a list or with a second picture / speed."""
+    return [list(o) if isinstance(o, (list, tuple)) else list(o.views) for o in options]
+
+
 def _plain(names: list[str], mount: Mount) -> bool:
     return all(mount.presets[n].projection == "flat" and not mount.presets[n].roll_turns for n in names)
 
@@ -75,11 +81,11 @@ def candidates(shot: Shot, scene: Scene | None, profile: Profile, theme: Theme |
                 found.append(resolved)
 
     if theme is not None:
-        add(theme.variants.get(shot.type, []), True)
+        add(_lists(theme.variants.get(shot.type, [])), True)
         add([theme.framing[shot.type]] if shot.type in theme.framing else [], True)
     add([profile.scene_types[shot.type].framing], False)
     for other in themes:
-        add(other.variants.get(shot.type, []), False)
+        add(_lists(other.variants.get(shot.type, [])), False)
         add([other.framing[shot.type]] if shot.type in other.framing else [], False)
     return found
 
@@ -94,7 +100,7 @@ def views(shot: Shot, scene: Scene | None, profile: Profile, theme: Theme | None
     accents: set[str] = set()
     if scene is not None and profile.ai_framing.accents > 0:
         for other in themes:
-            for option in other.variants.get(shot.type, []):
+            for option in _lists(other.variants.get(shot.type, [])):
                 try:
                     resolved = resolve_framing(option, scene, mount)
                 except KeyError:
@@ -145,9 +151,10 @@ FOV = {"flat": (60.0, 140.0), "planet": (140.0, 320.0), "fisheye": (160.0, 230.0
 PROJECTION = {"normal": "flat", "flat": "flat", "planet": "planet", "fisheye": "fisheye"}
 
 
-def custom_preset(spec: dict, profile: Profile, hold_s: float) -> Preset:
+def custom_preset(spec: dict, profile: Profile, hold_s: float, world: bool = False) -> Preset:
     """A view the model aimed itself, with every number brought into a sane range.
-    hold_s: how long the view is held (source seconds), to turn a pan angle into a rate."""
+    hold_s: how long the view is held (source seconds), to turn a pan angle into a rate.
+    world: the flight log is there, so the view may be held on a compass direction or on the airfield."""
     projection = PROJECTION[str(spec.get("projection", "normal")).lower()]
     low, high = FOV[projection]
 
@@ -158,8 +165,12 @@ def custom_preset(spec: dict, profile: Profile, hold_s: float) -> Preset:
     zoom = None if zoom in (None, "", 0) or abs(fov(zoom) - wide) < 3 else fov(zoom)
     limit = profile.max_turn_dps
     pan = float(spec.get("pan") or 0.0) / max(hold_s, 0.5)
-    level = projection == "flat" and str(spec.get("horizon", "")).lower() == "level"
-    return Preset(yaw=round((float(spec["yaw"]) + 180) % 360 - 180, 1),
+    held = world and projection == "flat" and bool(spec.get("hold"))
+    aimed = world and projection == "flat" and str(spec.get("look_at", "")).lower() in ("airfield", "home")
+    level = projection == "flat" and (str(spec.get("horizon", "")).lower() == "level" or held or aimed)
+    if held or aimed:                               # the world gives the motion: no pan on top of it
+        pan = 0.0
+    return Preset(world=held and not aimed, target="home" if aimed else "", yaw=round((float(spec["yaw"]) + 180) % 360 - 180, 1),
                   pitch=round(min(max(float(spec.get("pitch", 0.0)), -90.0), 90.0), 1),
                   fov=wide, fov_end=zoom, projection=projection, pan_dps=round(min(max(pan, -limit), limit), 2),
                   roll_turns=1.0 if spec.get("roll") else 0.0, horizon="locked" if level else "aircraft",
@@ -216,17 +227,37 @@ def _own_stills(shot: Shot, own: dict, ctx, folder: Path) -> dict[str, Path]:
 PANO = (1024, 512)
 
 
-def _pano(shot: Shot, ctx, folder: Path) -> Path:
-    """The whole sphere at the middle of the shot, in the frame the views are aimed in."""
+MOMENTS = (("start", 0.08), ("middle", 0.5), ("end", 0.92))      # where in a shot the model looks at the sphere
+
+
+def _pano(shot: Shot, ctx, folder: Path, part: float = 0.5) -> Path:
+    """The whole sphere at one moment of the shot (part: 0 = its start, 1 = its end),
+    in the frame the views are aimed in."""
     from . import render
     rec = ctx.recording(shot.recording)
-    at = shot.start_s + shot.duration_s / 2
+    at = shot.start_s + shot.duration_s * part
     level = (ctx.levels or {}).get(shot.scene_id)
-    path = folder / f"pano_{fingerprint(rec.id, round(at, 2), level, ctx.mount.model_dump_json(include={'calibration'}))}.jpg"
+    path = folder / f"pano_{fingerprint(rec.id, round(at, 2), level, ctx.mount.model_dump_json(include={'calibration'}), 'whole sphere')}.jpg"
     if not path.exists():
         view = Keyframe(t=0, yaw=0, pitch=0, roll=0, fov=100)
         render.still(rec, ctx.mount, at, view, PANO, path, ctx.work, ctx.log, level=level, projection="pano")
     return path
+
+
+def pano_strip(paths: list[Path]) -> bytes:
+    """Start, middle and end of a shot as one picture, each a panorama with its grid and its name."""
+    from PIL import Image, ImageDraw
+    w, h = 768, 384
+    strip = Image.new("RGB", (w, h * len(paths)), "black")
+    for i, (path, (label, _)) in enumerate(zip(paths, MOMENTS)):
+        tile = Image.open(io.BytesIO(pano_sheet(path))).resize((w, h))
+        draw = ImageDraw.Draw(tile, "RGBA")
+        draw.rectangle([w - 70, h - 20, w - 2, h - 2], fill=(0, 0, 0, 190))
+        draw.text((w - 64, h - 17), label.upper(), fill="white")
+        strip.paste(tile, (0, h * i))
+    data = io.BytesIO()
+    strip.save(data, "JPEG", quality=80)
+    return data.getvalue()
 
 
 def pano_sheet(path: Path) -> bytes:
@@ -410,10 +441,12 @@ def _image(data: bytes) -> dict:
 
 
 def request_body(batch: list[dict], profile: Profile, mount: Mount, title: str, showy: bool,
-                 fixed: list[str] | None = None, so_far: list[str] | None = None) -> dict:
+                 fixed: list[str] | None = None, so_far: list[str] | None = None,
+                 elsewhere: list[str] | None = None) -> dict:
     """batch: per shot {"shot", "names", "extra", "stills", "pano"}."""
     cfg = profile.ai_framing
     flight = profile.kind == "flight"
+    world = any(item.get("world") for item in batch)
     kind = ("a glider flight; the camera is fixed in the cockpit in front of the pilot" if flight
             else "a holiday; the camera is on a selfie stick carried by one of the travellers")
     who = "the pilot" if flight else "the person holding the camera"
@@ -429,7 +462,9 @@ def request_body(batch: list[dict], profile: Profile, mount: Mount, title: str, 
         "only a 360 camera can: what is below, above, beside and behind; follow something across the sphere; "
         "reveal where we are; play with scale.\n\n"
         "The cuts are already chosen. For every shot you get two pictures:\n"
-        "1. PANORAMA: the whole sphere at the middle of the shot, with a grid. " + frame + ". Look at it "
+        "1. PANORAMAS: the whole sphere at the START, the MIDDLE and the END of the shot, one above the other, "
+        "each with a grid. " + frame + ". Compare them: what stays where it is belongs to the aircraft, what "
+        "moves across is the world going by, and that tells you where to start a move and where it can end. Look "
         "closely: find the most interesting things in this particular moment (the airfield or a town below, "
         "a river, clouds, the sun, another aircraft, the wing against the ground, a shadow, a building, people) "
         "and note at which yaw / pitch they are.\n"
@@ -446,7 +481,17 @@ def request_body(batch: list[dict], profile: Profile, mount: Mount, title: str, 
         "back (larger). pan: degrees the camera turns to the right (negative: left) while the view is held, for a "
         "slow sweep. roll: the picture rolls once all the way over. horizon level keeps the horizon flat while the "
         "aircraft banks (clean outside views); aircraft lets the picture bank with it (the cabin in view). All "
-        "views of one shot share a projection.\n\n"
+        "views of one shot share a projection.\n"
+        + (
+            "Two more things only a 360 camera can do, both for the normal projection:\n"
+            "  \"hold\": true keeps the compass direction the view starts with: the aircraft turns, the picture does "
+            "not. In a turn the landscape then stands still and the wing, the nose and the pilot pass through the "
+            "frame. Give the yaw / pitch at the START of the shot.\n"
+            "  \"look_at\": \"airfield\" keeps the picture on the airfield the flight began from, wherever the aircraft "
+            "points (yaw and pitch are then worked out for you; give a fov).\n" if world else "")
+        + "A shot may also be a SPLIT FRAME: add \"second\": [views] and the frame is cut in two, your \"views\" above "
+          "and the second picture below (normal projection, one or two views). Use it to show two directions at "
+          "once: what is happening and who is watching it, the ground below and the horizon ahead.\n\n"
         "Direct it like a film:\n"
         "- every shot shows something different; no two shots with the same path, no two neighbours that look "
         "the same way;\n"
@@ -456,19 +501,28 @@ def request_body(batch: list[dict], profile: Profile, mount: Mount, title: str, 
         "- rhythm: calm held views between shots that move; an opening that says where we are and an ending that "
         "feels like one;\n"
         f"- {who} is the main subject of at most {cfg.person_shots} shot(s) of the film, fixed shots included: "
-        "this film is about the place and the motion, not a portrait;\n"
+        "this film is about the place and the motion, not a portrait. But a film with nobody in it is empty: "
+        f"when the film has three or more shots, show {who} once, best as the lower half of a split frame;\n"
+        "- a film of three or more shots uses at least one thing only a 360 camera can do (a split frame, a held "
+        "view, a small planet), where the scene suits it;\n"
+        "- BLOCKED ZONES are listed per shot: things fixed close to the camera (its mount, another camera). Keep "
+        "them out of the frame. A view reaches about half its fov to each side of its yaw and above and below "
+        "its pitch, so aim well clear of a zone or narrow the fov; a view that still catches one is moved for you;\n"
         "- avoid aiming at the instrument panel, at glare and reflections on the canopy, at empty sky with "
         "nothing in it;\n"
         + ("" if showy else
-           f"- showpieces (planet or fisheye projection, a roll, ready views marked [accent]): at most {cfg.accents} "
-           "shot(s) in the film, where the scene deserves it;\n")
+           f"- showpieces (planet or fisheye projection, a roll, a split frame, ready views marked [accent]): at "
+           f"most {cfg.accents} shot(s) in the film, where the scene deserves it;\n")
         + "- give every shot an answer;\n"
         + "- write \"seen\" and \"why\" in Polish, one short plain sentence each: the film's author reads them.\n"
         + (f"{cfg.brief}\n" if cfg.brief else "")
+        + ("\nThe other films made from this same recording already show: " + "; ".join(elsewhere) + ". Make this "
+           "film look different from them: other directions, other moves, another way to show the same place.\n"
+           if elsewhere else "")
         + ("\nFixed shots you cannot change: " + "; ".join(fixed) + "\n" if fixed else "")
         + ("\nAlready decided earlier in this film: " + "; ".join(so_far) + "\n" if so_far else "")
         + "\nAnswer with JSON only: {\"shots\": [{\"shot\": <number>, \"seen\": \"<what is worth showing in the "
-          "panorama and where>\", \"views\": [<letter or view object>, ...], \"why\": \"<a few words>\"}]}")
+          "panorama and where>\", \"views\": [<letter or view object>, ...], \"second\": [<optional: views of the lower picture>], \"why\": \"<a few words>\"}]}")
     content = [{"type": "text", "text": text}]
     for item in batch:
         shot, names = item["shot"], item["names"]
@@ -481,11 +535,15 @@ def request_body(batch: list[dict], profile: Profile, mount: Mount, title: str, 
                 lines.append(f"  The way ahead is near yaw {shot.attrs['yaw_travel']:.0f}.")
             if "yaw_holder" in shot.attrs:
                 lines.append(f"  The person holding the camera is near yaw {shot.attrs['yaw_holder']:.0f}.")
+        if item.get("zones"):
+            lines.append("  Blocked zones: " + "; ".join(
+                f"{z['what'] or 'something'} at yaw {z['yaw'][0]:.0f}..{z['yaw'][1]:.0f}, pitch {z['pitch'][0]:.0f}..{z['pitch'][1]:.0f}"
+                for z in item["zones"]) + ".")
         lines.append("  Ready views:")
         lines += [f"  {letters[n]}{' [accent]' if n in item['extra'] else ''}: {describe(n, mount, profile.kind)}" for n in names]
-        lines.append("  Pictures: panorama, then ready views.")
+        lines.append("  Pictures: panoramas (start, middle, end), then ready views (at the middle).")
         content.append({"type": "text", "text": "\n".join(lines)})
-        content.append(_image(pano_sheet(item["pano"])))
+        content.append(_image(pano_strip(item["panos"])))
         content.append(_image(sheet({n: item["stills"][n] for n in names}, letters)))
     body = {"model": cfg.model, "messages": [{"role": "user", "content": content}]}
     if cfg.reasoning_tokens > 0:                # thinking models want the default temperature and room to answer
@@ -497,9 +555,10 @@ def request_body(batch: list[dict], profile: Profile, mount: Mount, title: str, 
 
 
 def parse_reply(text: str, batch: list[dict], profile: Profile, mount: Mount, showy: bool,
-                accents_left: int, person_left: int) -> dict[int, tuple[list[str], str, dict]]:
-    """Per shot: (view names in order, why, the model's own views by name). Camera paths
-    that are not valid for their shot are ignored; showpieces and person shots are rationed."""
+                accents_left: int, person_left: int) -> dict[int, tuple[list[str], str, dict, list[str]]]:
+    """Per shot: (view names in order, why, the model's own views by name, the views of the
+    lower picture of a split frame). Camera paths that are not valid for their shot are
+    ignored; showpieces and person shots are rationed."""
     match = re.search(r"\{.*\}", text, re.S)
     try:
         rows = json.loads(match.group(0))["shots"] if match else []
@@ -516,16 +575,36 @@ def parse_reply(text: str, batch: list[dict], profile: Profile, mount: Mount, sh
             hold = shot.duration_s / max(len(given), 1)
             presets = {n: mount.presets[n] for n in names}
             path, own = [], {}
-            for i, view in enumerate(given):
+            lower = list(row.get("second") or [])[:2] if shot.duration_s / shot.speed >= 3 else []
+            zones, aspect = item.get("zones") or [], blocked.ASPECTS.get(profile.kind, 1.0)
+            for i, view in enumerate([*given, *lower]):
                 if isinstance(view, dict):
                     name = f"ai{shot.index}{chr(97 + i)}"
-                    presets[name] = custom_preset(view, profile, hold)
+                    made = custom_preset(view, profile, hold, bool(item.get("world")))
+                    if zones and made.projection == "flat" and not made.world and not made.target:
+                        # Half a frame is twice as wide for its height: it reaches further to the sides.
+                        free = blocked.clear(zones, made.yaw, made.pitch, made.fov, aspect * (2 if i >= len(given) or lower else 1))
+                        if free is None:                # nothing near it is clear of the mount: the view is left out
+                            if i < len(given):
+                                given = given[:i] + [None] + given[i + 1:]
+                            continue
+                        swept = made.yaw + made.pan_dps * hold
+                        pan = made.pan_dps if blocked.share(zones, swept, free[1], free[2], aspect) <= blocked.TOO_MUCH else 0.0
+                        made = made.model_copy(update={"yaw": free[0], "pitch": free[1], "fov": free[2], "pan_dps": pan,
+                                                       "fov_end": None if made.fov_end and made.fov_end > free[2] + 25 else made.fov_end})
+                    presets[name] = made
                     own[name] = presets[name].model_dump(exclude_defaults=True) | {"yaw": presets[name].yaw,
                                                                                     "pitch": presets[name].pitch,
                                                                                     "fov": presets[name].fov}
+                elif view is None:
+                    continue
                 else:
                     name = by_letter[str(view).strip().upper()]
                 path.append(name)
+            main = sum(v is not None for v in given)        # views of the upper picture that survived
+            path, second = path[:main], path[main:]
+            if any(presets[n].projection != "flat" for n in second):       # the lower picture is a normal lens
+                second = []
         except (KeyError, TypeError, ValueError, AttributeError):
             continue
         # The person is rationed: views of them beyond the limit are dropped from the path.
@@ -536,14 +615,14 @@ def parse_reply(text: str, batch: list[dict], profile: Profile, mount: Mount, sh
                 person_left -= 1
         if not valid_sequence(path, shot, presets):
             continue
-        accent = any(n in item["extra"] or (n in own and (presets[n].projection != "flat" or presets[n].roll_turns))
-                     for n in path)
+        accent = bool(second) or any(n in item["extra"] or (n in own and (presets[n].projection != "flat" or presets[n].roll_turns))
+                                     for n in path)
         if accent and not showy:
             if accents_left <= 0:
                 continue
             accents_left -= 1
         why = " | ".join(str(row.get(k, "")).strip() for k in ("seen", "why") if row.get(k))[:240]
-        out[shot.index] = (path, why, {n: own[n] for n in path if n in own})
+        out[shot.index] = (path, why, {n: own[n] for n in [*path, *second] if n in own}, second)
     return out
 
 
@@ -552,8 +631,9 @@ def review_body(first: dict, batch: list[dict], found: dict, shown: dict[int, di
     content = list(first["messages"][0]["content"])
     content.append({"type": "text", "text":
                     "REVIEW. You answered:\n" + json.dumps({"shots": [
-                        {"shot": i, "views": [n if n not in own else own[n] for n in path]}
-                        for i, (path, _, own) in sorted(found.items())]}) + "\n"
+                        {"shot": i, "views": [n if n not in own else own[n] for n in path],
+                         **({"second": [n if n not in own else own[n] for n in second]} if second else {})}
+                        for i, (path, _, own, second) in sorted(found.items())]}) + "\n"
                     "You aimed some views yourself without seeing the result. Below is what each of them really "
                     "shows (numbered in the order of the path of the shot). Be strict: a view that turned out to "
                     "show the body or legs of the pilot, the instrument panel, a camera mount or tablet filling "
@@ -571,27 +651,33 @@ def review_body(first: dict, batch: list[dict], found: dict, shown: dict[int, di
     return {**first, "messages": [{"role": "user", "content": content}]}
 
 
+def poster():
+    """post(body) -> the model's answer as text, through OpenRouter with the key from the environment or .env."""
+    import httpx
+    key = api_key()
+
+    def post(body: dict) -> str:
+        try:
+            reply = httpx.post(OPENROUTER_URL, json=body, timeout=300,
+                               headers={"Authorization": f"Bearer {key}", "X-Title": "insta-roller"})
+        except httpx.HTTPError as error:
+            raise Unavailable(f"OpenRouter cannot be reached ({type(error).__name__})") from None
+        if reply.status_code != 200:
+            raise Unavailable(f"OpenRouter answered {reply.status_code}: {reply.text[:200]}")
+        data = reply.json()
+        if "choices" not in data:               # OpenRouter reports some errors with status 200
+            raise Unavailable(f"OpenRouter: {str(data.get('error', data))[:200]}")
+        return data["choices"][0]["message"]["content"] or ""
+    return post
+
+
 def choose_openrouter(items: list[dict], profile: Profile, mount: Mount, title: str, showy: bool,
                       fixed: list[tuple[str, bool]], post=None, log: Path | None = None,
-                      own_stills=None) -> dict[int, tuple[list[str], str, dict]]:
+                      own_stills=None, elsewhere: list[str] | None = None) -> dict[int, tuple[list[str], str, dict, list[str]]]:
     """fixed: (description, shows the person) of the shots the model cannot change.
-    own_stills(shot, views) renders the views the model aimed itself, for the review round."""
-    key = api_key()
-    if post is None:
-        import httpx
-
-        def post(body: dict) -> str:
-            try:
-                reply = httpx.post(OPENROUTER_URL, json=body, timeout=300,
-                                   headers={"Authorization": f"Bearer {key}", "X-Title": "insta-roller"})
-            except httpx.HTTPError as error:
-                raise Unavailable(f"OpenRouter cannot be reached ({type(error).__name__})") from None
-            if reply.status_code != 200:
-                raise Unavailable(f"OpenRouter answered {reply.status_code}: {reply.text[:200]}")
-            data = reply.json()
-            if "choices" not in data:           # OpenRouter reports some errors with status 200
-                raise Unavailable(f"OpenRouter: {str(data.get('error', data))[:200]}")
-            return data["choices"][0]["message"]["content"] or ""
+    own_stills(shot, views) renders the views the model aimed itself, for the review round.
+    elsewhere: what the other reels of the same recording already show."""
+    post = post or poster()
     cfg = profile.ai_framing
     out: dict[int, tuple[list[str], str, dict]] = {}
     accents = cfg.accents
@@ -600,14 +686,14 @@ def choose_openrouter(items: list[dict], profile: Profile, mount: Mount, title: 
     said = []
     for i in range(0, len(items), BATCH):
         batch = items[i:i + BATCH]
-        body = request_body(batch, profile, mount, title, showy, [text for text, _ in fixed], so_far)
+        body = request_body(batch, profile, mount, title, showy, [text for text, _ in fixed], so_far, elsewhere)
         reply = post(body)
         said.append(reply)
         found = parse_reply(reply, batch, profile, mount, showy, accents, person)
         shown = {}
         if own_stills is not None:
             by_index = {item["shot"].index: item["shot"] for item in batch}
-            shown = {index: own_stills(by_index[index], own) for index, (_, _, own) in found.items() if own}
+            shown = {index: own_stills(by_index[index], own) for index, (_, _, own, _) in found.items() if own}
         if shown:                               # one more round with its own views in front of the model
             try:
                 reply = post(review_body(body, batch, found, shown))
@@ -620,23 +706,49 @@ def choose_openrouter(items: list[dict], profile: Profile, mount: Mount, title: 
             shot = item["shot"]
             if shot.index not in found:
                 continue
-            path, why, own = found[shot.index]
+            path, why, own, second = found[shot.index]
             presets = {**mount.presets, **{n: Preset.model_validate(v) for n, v in own.items()}}
             person -= any(shows_person(presets[n], mount) for n in path)
-            accents -= any(n in item["extra"] or presets[n].projection != "flat" or presets[n].roll_turns for n in path
-                           if n in own or n in item["extra"])
+            accents -= bool(second) or any(n in item["extra"] or presets[n].projection != "flat" or presets[n].roll_turns
+                                           for n in path if n in own or n in item["extra"])
             so_far.append(f"shot {shot.index} ({shot.type}): " + " -> ".join(
                 n if n not in own else f"own view yaw {own[n]['yaw']:.0f} pitch {own[n]['pitch']:.0f}" for n in path))
-            out[shot.index] = (path, f"{cfg.model}: {why}", own)
+            out[shot.index] = (path, f"{cfg.model}: {why}", own, second)
     if log is not None:                         # kept beside the cache, to see what the model said
         log.write_text("\n\n".join(said), encoding="utf-8")
     return out
 
 
 # --- entry point --------------------------------------------------------------------------
+def blocked_zones(shots: list[Shot], scenes: list[Scene], profile: Profile, mount: Mount, ctx, folder: Path,
+                  post) -> dict[int, list[dict]]:
+    """Shot index -> the zones in the way at the camera position it was filmed from."""
+    levels = getattr(ctx, "levels", None) or {}
+    groups: dict[tuple, list[Scene]] = {}
+    for scene in scenes:
+        groups.setdefault((scene.recording, *blocked.position_key(levels.get(scene.id))), []).append(scene)
+    by_id = {s.id: s for s in scenes}
+    found: dict[tuple, list[dict]] = {}
+    out = {}
+    for shot in shots:
+        scene = by_id.get(shot.scene_id)
+        if scene is None:
+            continue
+        key = (scene.recording, *blocked.position_key(levels.get(scene.id)))
+        if key not in found:
+            same = sorted(groups[key], key=lambda x: x.start_s)
+            first, last = same[0], same[-1]
+            moments = [first.start_s + 3, (first.start_s + last.end_s) / 2, last.end_s - 3]
+            found[key] = blocked.zones(ctx.recording(scene.recording), mount, levels.get(scene.id), moments,
+                                       profile.ai_framing.model, profile.kind, ctx.work, ctx.log, folder, post)
+        out[shot.index] = found[key]
+    return out
+
+
 def apply(reel: ReelPlan, scenes: list[Scene], profile: Profile, mount: Mount, theme: Theme | None, ctx,
-          progress=print, post=None) -> ReelPlan:
-    """The reel with the framing of its shots chosen by the engine in profile.ai_framing."""
+          progress=print, post=None, elsewhere: list[str] | None = None) -> ReelPlan:
+    """The reel with the framing of its shots chosen by the engine in profile.ai_framing.
+    elsewhere: what the other reels of this recording already show, so this one looks different."""
     cfg = profile.ai_framing
     if cfg.engine == "off":
         return reel
@@ -659,31 +771,44 @@ def apply(reel: ReelPlan, scenes: list[Scene], profile: Profile, mount: Mount, t
         return reel
     folder = ctx.work / "ai_framing"
     folder.mkdir(parents=True, exist_ok=True)
-    key = fingerprint(cfg.model_dump_json(), reel.theme, reel.title, mount.model_dump_json(), PROMPT,
+    key = fingerprint(cfg.model_dump_json(), reel.theme, reel.title, reel.take, mount.model_dump_json(), PROMPT, elsewhere,
                       json.dumps([[s.scene_id, s.start_s, s.duration_s, s.speed, s.attrs, o, n, sorted(e)]
                                   for s, o, n, e in plans], sort_keys=True))
     cache = folder / f"{key}.json"
     if cache.exists():
-        chosen = {int(k): (v[0], v[1], v[2] if len(v) > 2 else {})
+        chosen = {int(k): (v[0], v[1], v[2] if len(v) > 2 else {}, v[3] if len(v) > 3 else [])
                   for k, v in json.loads(cache.read_text(encoding="utf-8")).items()}
     else:
         try:
             if remote:
+                ask = post or poster()
+                zones = blocked_zones([shot for shot, _, _, _ in plans], scenes, profile, mount, ctx, folder, ask)
+                tele = getattr(ctx, "telemetry", None)      # the flight log, for views held on the world
+                world = bool(tele and tele.samples and tele.samples[0].heading_deg is not None)
                 items = [{"shot": shot, "names": names, "extra": extra, "stills": _stills(shot, names, ctx, folder),
-                          "pano": _pano(shot, ctx, folder)} for shot, _, names, extra in plans]
-                showy = bool(theme) and any(not _plain(o, mount) for options in theme.variants.values() for o in options
+                          "panos": [_pano(shot, ctx, folder, part) for _, part in MOMENTS], "world": world,
+                          "zones": zones.get(shot.index, [])}
+                         for shot, _, names, extra in plans]
+                aspect = blocked.ASPECTS.get(profile.kind, 1.0)
+                for item in items:                          # ready views the mount spoils are not offered
+                    clean = [n for n in item["names"] if mount.presets[n].projection != "flat" or mount.presets[n].track
+                             or blocked.share(item["zones"], mount.presets[n].yaw, mount.presets[n].pitch,
+                                              mount.presets[n].fov, aspect) <= 0.2]
+                    if len(clean) >= 3:
+                        item["names"] = clean
+                showy = bool(theme) and any(not _plain(o, mount) for options in theme.variants.values() for o in _lists(options)
                                             if all(n in mount.presets for n in o))
                 open_ids = {shot.index for shot, _, _, _ in plans}
                 fixed = [(f"shot {s.index} ({s.type}): " + " -> ".join(s.framing),
                           any(shows_person(mount.presets[n], mount) for n in s.framing if n in mount.presets))
                          for s in reel.shots if s.index not in open_ids]
-                chosen = choose_openrouter(items, profile, mount, reel.title or reel.theme, showy, fixed, post,
+                chosen = choose_openrouter(items, profile, mount, reel.title or reel.theme, showy, fixed, ask,
                                            folder / f"{key}.reply.txt",
-                                           lambda shot, own: _own_stills(shot, own, ctx, folder))
+                                           lambda shot, own: _own_stills(shot, own, ctx, folder), elsewhere)
             else:
                 items = [(shot, options, _stills(shot, sorted({n for o in options for n in o}), ctx, folder))
                          for shot, options, _, _ in plans]
-                chosen = {k: (names, why, {}) for k, (names, why) in choose_local(items, profile, progress).items()}
+                chosen = {k: (names, why, {}, []) for k, (names, why) in choose_local(items, profile, progress).items()}
         except (Unavailable, RuntimeError) as error:
             progress(f"ai framing: {error}; the theme's own framing is used")
             return reel
@@ -691,10 +816,10 @@ def apply(reel: ReelPlan, scenes: list[Scene], profile: Profile, mount: Mount, t
     shots = []
     for shot in reel.shots:
         if shot.index in chosen:
-            names, why, own = chosen[shot.index]
+            names, why, own, second = chosen[shot.index]
             attrs = {**shot.attrs, "ai": why}
             if own:
                 attrs["views"] = own            # the views the model aimed itself, used by plan_framing
-            shot = shot.model_copy(update={"framing": list(names), "attrs": attrs})
+            shot = shot.model_copy(update={"framing": list(names), "second": list(second), "attrs": attrs})
         shots.append(shot)
     return reel.model_copy(update={"shots": shots})
