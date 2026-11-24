@@ -345,6 +345,7 @@ def test_custom_output_folder_goes_to_the_cli_as_out(env):
 def test_cache_folder_setting_goes_to_the_cli_as_work(env):
     client = env.client
     assert client.get("/api/settings").json() == {"work": "", "quality": "auto", "people_names": [],
+                                                  "ai_framing": "", "ai_model": "", "ai_reasoning": 0,
                                                   "data": str(env.data), "profiles": str(env.profiles)}
     work = env.tmp / "cache"
     assert client.put("/api/settings", json={"work": "cache"}).status_code == 400
@@ -361,7 +362,8 @@ def test_cache_folder_setting_goes_to_the_cli_as_work(env):
     assert env.client.put("/api/settings", json={"quality": "good"}).json()["work"] == str(work)     # one setting at a time
     assert env.client.put("/api/settings", json={"quality": "nonsense"}).status_code == 422
     assert env.client.put("/api/settings", json={"work": ""}).json() == {
-        "work": "", "quality": "good", "people_names": [], "data": str(env.data), "profiles": str(env.profiles)}
+        "work": "", "quality": "good", "people_names": [], "ai_framing": "", "ai_model": "", "ai_reasoning": 0,
+        "data": str(env.data), "profiles": str(env.profiles)}
     assert "--work" not in env.job()["commands"][0] and env.client.get("/api/meta").json()["quality"] == "good"
 
 
@@ -430,8 +432,8 @@ def test_ui_pages_are_served(env):
     files = {name: env.client.get(f"/static/{name}") for name in (
         "app.js", "ui.js", "live.js", "home.js", "wizard.js", "films.js", "review.js", "people.js", "settings.js", "style.css")}
     assert all(r.status_code == 200 and r.headers["cache-control"] == "no-cache" for r in files.values())   # never old JS
-    assert all(text in files["app.js"].text for text in ("Przegląd", "Nowy film", "Filmy", "Osoby", "Ustawienia"))
-    assert "Zrób film" in files["wizard.js"].text and "Renderuj" in files["review.js"].text
+    assert all(text in files["app.js"].text for text in ("Przegląd", "Nowe rolki", "Moje nagrania", "Osoby", "Ustawienia"))
+    assert "Znajdź najlepsze momenty" in files["wizard.js"].text and "Zrób rolki" in files["review.js"].text
     css = files["style.css"].text
     assert "prefers-color-scheme: dark" in css and ':root[data-theme="dark"]' in css and 'not([data-theme="light"])' in css
     assert not any("@import" in r.text or "//fonts." in r.text or "cdn" in r.text.lower() for r in files.values())
@@ -1140,3 +1142,30 @@ def test_ai_model_and_reasoning_reach_the_request():
     import pytest
     with pytest.raises(Exception):
         web.JobOptions(ai_model="bad model; rm")
+
+
+def test_reel_counts_reach_the_command_line():
+    from app import steps, web
+    args = steps.cli_args("plan", "D:/x", web.JobOptions(counts={"thermal": 3}).model_dump())
+    assert "--counts=thermal=3" in args
+
+
+def test_settings_choose_the_ai_for_new_jobs_and_render_takes_a_quality(env):
+    client = env.client
+    assert client.put("/api/settings", json={"ai_framing": "openrouter", "ai_model": "anthropic/claude-haiku-5.5",
+                                             "ai_reasoning": 2000}).status_code == 200
+    assert client.get("/api/meta").json()["ai"] == {"ai_framing": "openrouter", "ai_model": "anthropic/claude-haiku-5.5",
+                                                    "ai_reasoning": 2000}
+    job = env.submit(profile="flight", review=True)
+    assert "--ai-framing=openrouter" in job["commands"][1] and "--ai-model=anthropic/claude-haiku-5.5" in job["commands"][1]
+    assert "--ai-reasoning=2000" in job["commands"][1]
+    assert job["label"].startswith("Lot")                                    # a name a person can read
+    assert client.put("/api/settings", json={"ai_model": "bad model"}).status_code == 422
+
+
+def test_recording_label_reads_like_a_title():
+    assert web.recording_label("flight", "D:/x/20260623", None) == "Lot 23 czerwca 2026"
+    assert web.recording_label("flight", "D:/x/szybowiec", None) == "Lot: szybowiec"
+    days = {"recordings": [{"day": "20250802"}, {"day": "20250819"}]}
+    assert web.recording_label("holiday", "D:/x/Rejs", days) == "Wyjazd 2–19 sierpnia 2025"
+    assert web.recording_label("holiday", "D:/x/Rejs", {"recordings": [{"day": "20250730"}, {"day": "20250802"}]})         == "Wyjazd 30 lipca 2025 – 2 sierpnia 2025"

@@ -1,20 +1,20 @@
-// Nowy film: three steps. 1 Nagrania, 2 Co ma powstać, 3 Jakość i start.
-import {$, h, api, icon, guard, toast, store, duration, plural, THEMES, inWindow, chooseFolder} from "./ui.js";
-import {setContext} from "./live.js";
+// Nowe rolki: three steps. 1 Nagrania, 2 Rolki, 3 Ujęcia (the review screen, review.js, where the work is started).
+import {$, h, api, icon, guard, toast, store, duration, plural, THEMES, inWindow, chooseFolder, flowSteps} from "./ui.js";
+import {live, setContext} from "./live.js";
 
 const CUSTOM = "__custom__";
-const STEPS = ["Nagrania", "Co ma powstać", "Jakość i start"];
+const STEPS = ["Nagrania", "Rolki", "Ujęcia"];
 // Seconds of work for one second of film, by quality: honest orders of magnitude, not promises.
 const QUALITIES = [
-  ["best", "Najlepsza", "Pełna jakość z plików kamery, sklejona programem producenta. Bez szwu.", 15],
-  ["good", "Dobra", "Pełna jakość z plików kamery, sklejona przez FFmpeg. Na łączeniu obiektywów bywa widoczny szew.", 5],
-  ["fast", "Szybki podgląd", "Z małych plików podglądu kamery. Żeby sprawdzić, co wyjdzie, zanim zrobisz film na czysto.", 1],
+  ["best", "Najlepsza", "Pełna ostrość, bez widocznego łączenia obiektywów. Najdłużej.", 15],
+  ["good", "Dobra", "Pełna ostrość, ale na łączeniu obiektywów bywa widoczny szew.", 5],
+  ["fast", "Szybki podgląd", "Mała rozdzielczość. Żeby sprawdzić, co wyjdzie, zanim zrobisz rolki na czysto.", 1],
 ];
 let view, meta, w;
 
 function fresh(preset) {
   return {step: 1, preset, listing: null, found: null, checking: false, kind: preset === "lot" ? "flight" : preset === "urlop" ? "holiday" : null,
-          themes: null, overlay: null, ai: null, aiModel: "", aiReasoning: "", lengths: {}, mode: "day", length: "", people: null, review: false, shots: preset === "ujecia", films: preset !== "ujecia",
+          themes: null, overlay: null, ai: null, aiModel: "", aiReasoning: "", lengths: {}, counts: {}, mode: "day", length: "", people: null, auto: false, shots: preset === "ujecia", films: preset !== "ujecia",
           quality: null, out: "", profile: preset === "wlasne" ? CUSTOM : "auto", mount: "", yaml: "", more: preset === "wlasne"};
 }
 
@@ -35,13 +35,13 @@ function themes() {                             // [{name, title, text, length, 
   return (p ? p.themes : []).map(name => {
     const t = meta.themes.find(x => x.name === name) || {name, enabled: true};
     const [title, text] = THEMES[name] || [t.title || name, ""];
-    return {name, title: t.title || title, text, length: +w.lengths[name] || +w.length || t.length || p.length, usual: t.length || p.length, def: !!t.enabled,
+    return {name, title: t.title || title, text, length: +w.lengths[name] || +w.length || t.length || p.length, usual: t.length || p.length, count: Math.min(Math.max(+w.counts[name] || 1, 1), 12), def: !!t.enabled,
             on: w.themes && name in w.themes ? w.themes[name] : !!t.enabled};
   });
 }
 function filmSeconds() {
   const p = profile() || {};
-  if (flight()) return themes().filter(t => t.on).reduce((sum, t) => sum + t.length, 0);
+  if (flight()) return themes().filter(t => t.on).reduce((sum, t) => sum + t.length * t.count, 0);
   return (+w.length || p.length || 60) * (w.mode === "both" ? 2 : 1);
 }
 function quality() {
@@ -80,10 +80,10 @@ function found() {
   return h("div", {}, h("div", {class: "found"}, icon("check"), h("div", {},
     h("div", {class: "h3"}, f.recordings == null ? "Są tu nagrania" : `${plural(f.recordings, "nagranie", "nagrania", "nagrań")}${f.duration_s ? `, razem ${duration(f.duration_s)}` : ""}`),
     h("ul", {class: "facts"},
-      yes(f.full_quality, "Są pliki w pełnej jakości.", "Nie ma plików w pełnej jakości (.insv)."),
-      yes(f.previews, "Są pliki podglądu z kamery.", "Nie ma plików podglądu."),
-      yes(f.igc, "Jest zapis lotu (IGC).", "Nie ma zapisu lotu (IGC)."),
-      l.job && h("li", {}, `Z tego folderu powstał już film (nr ${l.job}). Przerobię tylko to, co nowe.`)))),
+      yes(f.full_quality, "Są pliki w pełnej jakości.", "Nie ma plików w pełnej jakości (.insv): rolki będą mniej ostre."),
+      yes(f.previews, "Są małe pliki podglądu: szukanie momentów pójdzie szybko.", "Nie ma małych plików podglądu: szukanie momentów potrwa dłużej."),
+      yes(f.igc, "Jest zapis lotu z logera (plik IGC).", "Nie ma zapisu lotu z logera (pliku IGC): użyję danych z samej kamery."),
+      l.job && h("li", {}, "Z tych nagrań robiłem już rolki. Znalezione momenty wykorzystam ponownie.")))),
     h("div", {class: "mt2"}, h("div", {class: "muted", style: "font-size:13px;margin-bottom:8px"},
         w.kind && w.kind !== f.kind ? "Twój wybór:" : f.kind === "flight" ? "Wygląda na lot. Jeśli nie, zmień:" : "Wygląda na urlop. Jeśli to lot bez zapisu IGC, zmień:"),
       h("div", {class: "seg", style: "max-width:260px"}, [["flight", "Lot"], ["holiday", "Urlop"]].map(([value, text]) =>
@@ -96,7 +96,7 @@ function stepFolder() {
   const recent = !l.path && l.recent && l.recent.length > 0;
   return [
     h("div", {class: "row"}, h("div", {class: "cell"}, h("h1", {class: "title"}, "Gdzie są nagrania?"),
-      h("p", {class: "sub"}, "Wskaż folder z plikami z kamery. Niczego w nim nie zmienię: filmy trafią do osobnego podfolderu."))),
+      h("p", {class: "sub"}, "Wskaż folder z plikami z kamery: jeden lot albo jeden wyjazd. Niczego w nim nie zmienię, rolki trafią do osobnego podfolderu."))),
     h("div", {class: "row wide"},
       h("div", {class: "cell flush"},
         h("div", {style: "padding:20px 32px 12px"},
@@ -119,123 +119,122 @@ function stepFolder() {
           !l.dirs.length && h("li", {}, h("div", {class: "muted", style: "padding:12px 32px;font-size:14px"}, "Ten folder nie ma podfolderów.")))),
       h("div", {class: "stack"},
         h("div", {class: "cell"}, found()))),
-    bar(null, h("button", {class: "btn primary", type: "button", disabled: !(w.found && w.found.usable), onclick: () => { w.step = 2; draw(); }}, "Dalej", icon("right"))),
+    bar(null, h("button", {class: "btn primary", type: "button", disabled: !(w.found && w.found.usable), onclick: () => { w.step = 2; draw(); }}, "Dalej: wybierz rolki", icon("right"))),
   ];
 }
 
-// --- step 2: what to make ---------------------------------------------------------------------
+// --- step 2: which reels ----------------------------------------------------------------------
 const pick = (on, title, text, tags, onclick, disabled) => h("button", {class: "cell pick", type: "button", "aria-pressed": String(!!on), onclick, disabled},
   h("span", {class: "tick"}, icon("check")),
   h("div", {class: "h3", style: "padding-right:28px"}, title), h("p", {class: "muted", style: "margin-top:6px;font-size:14px"}, text),
   tags && h("div", {class: "tags", style: "margin-top:12px"}, tags));
+const toggle = (key, title, text) => h("label", {class: "switch"},
+  h("input", {type: "checkbox", checked: !!w[key], onchange: e => { w[key] = e.target.checked; draw(); }}), h("span", {}, title, h("small", {}, text)));
+
+// Who frames the shots: this film's choice, else the Settings, else the profile.
+const aiDefault = () => { const p = profile() || {}, m = meta.ai || {}; return {engine: m.ai_framing || p.ai || "off", model: m.ai_model || p.ai_model || "", reasoning: m.ai_reasoning || p.ai_reasoning || 0}; };
+const aiEngine = () => w.ai || aiDefault().engine;
 let aiModels;                                   // undefined = not asked, null = loading, [] = no list
 async function loadModels() {
-  if (aiModels !== undefined || (w.ai || (profile() || {}).ai) !== "openrouter") return;
+  if (aiModels !== undefined || aiEngine() !== "openrouter") return;
   aiModels = null;
   try { aiModels = (await api("/api/ai/models")).models || []; } catch { aiModels = []; }
   if (w && w.step === 2) draw();
 }
-function reasoningNote() {
-  const chosen = (aiModels || []).find(m => m.id === (w.aiModel || (profile() || {}).ai_model));
-  if (chosen && !chosen.reasoning) return "Ten model nie ma trybu reasoning: liczba zostanie pominięta.";
-  return "Ile tokenów model może zużyć na zastanowienie się przed odpowiedzią. 0 = bez reasoningu. Więcej = lepiej przemyślany film, ale drożej i dłużej.";
-}
-const toggle = (key, title, text) => h("label", {class: "switch"},
-  h("input", {type: "checkbox", checked: !!w[key], onchange: e => { w[key] = e.target.checked; draw(); }}), h("span", {}, title, h("small", {}, text)));
 
-function stepWhat() {
-  const p = profile() || {}, rows = [];
-  rows.push(h("div", {class: "row"}, h("div", {class: "cell"}, h("h1", {class: "title"}, "Co ma powstać?"),
-    h("p", {class: "sub"}, !w.films ? "Same ujęcia: najlepsze momenty jako osobne pliki, bez gotowego filmu."
-      : flight() ? "Z jednego lotu powstaje kilka krótkich filmów. Zaznacz te, które chcesz." : "Wybierz, jak podzielić nagrania z wyjazdu."))));
-  if (flight()) {
-    rows.push(h("div", {class: "row c3"}, themes().map(t => pick(t.on, t.title, t.text, [h("span", {class: "tag"}, `${Math.round(t.length)} s`), !t.def && h("span", {class: "tag plain"}, "domyślnie wyłączone")],
-      () => { w.themes = {...Object.fromEntries(themes().map(x => [x.name, x.on])), [t.name]: !t.on}; draw(); }))));
-  } else {
-    rows.push(h("div", {class: "row c3"}, [["day", "Film na każdy dzień", "Osobny film z każdego dnia wyjazdu."], ["trip", "Jeden film z wyjazdu", "Wszystkie dni w jednym filmie."],
-      ["both", "Jedno i drugie", "Film z każdego dnia i dodatkowo jeden z całości."]].map(([value, title, text]) => pick(w.mode === value, title, text, null, () => { w.mode = value; draw(); }))));
-  }
-  const overlayOn = w.overlay == null ? !!p.overlay : w.overlay;
-  const mine = w.people || p.people || [];
-  rows.push(h("div", {class: "row c2"},
-    flight() ? h("div", {class: "cell"}, h("div", {class: "h3"}, "Długość filmów"),
-        h("p", {class: "muted", style: "font-size:13px;margin:4px 0 10px"}, "W sekundach. Gdy materiału jest mniej, film wyjdzie krótszy."),
-        h("div", {class: "lengths"}, themes().filter(t => t.on).map(t => h("label", {class: "length"}, h("span", {}, t.title),
-          h("input", {type: "number", min: 5, max: 600, step: 5, inputmode: "numeric", "aria-label": `Długość filmu ${t.title} w sekundach`,
-            value: w.lengths[t.name] || "", placeholder: String(Math.round(+w.length || t.usual)),
-            oninput: e => { w.lengths[t.name] = e.target.value; }, onchange: () => draw()}), h("span", {class: "muted"}, "s")))),
-        h("div", {class: "h3", style: "margin-top:20px"}, "Na obrazie"),
-        h("label", {class: "switch"}, h("input", {type: "checkbox", checked: overlayOn, onchange: e => { w.overlay = e.target.checked; }}),
-          h("span", {}, "Dane lotu na obrazie", h("small", {}, "Prędkość, wysokość i wznoszenie w rogu kadru."))))
-      : h("div", {class: "cell"}, h("div", {class: "h3"}, "Długość i osoby"),
-        h("label", {class: "field mt"}, "Długość jednego filmu (sekundy)",
-          h("input", {type: "number", min: 5, step: 5, inputmode: "numeric", value: w.length, placeholder: `${p.length || 60} (zwykle)`, oninput: e => { w.length = e.target.value; }})),
-        h("div", {class: "field mt"}, "Kogo szukać w nagraniach"),
-        meta.people.length ? h("div", {class: "checks", style: "margin-top:8px"}, meta.people.map(name => h("label", {class: "check"},
-            h("input", {type: "checkbox", checked: mine.includes(name), onchange: e => { const set = new Set(w.people || p.people || []); e.target.checked ? set.add(name) : set.delete(name); w.people = [...set]; }}), name)))
-          : h("p", {class: "muted", style: "font-size:14px;margin-top:6px"}, "Lista osób jest pusta. Dodasz je w zakładce „Osoby”.")),
-    h("div", {class: "cell"}, h("div", {class: "h3"}, "Zanim powstanie film"),
-      h("label", {class: "field"}, "AI Framing: kto wybiera kadry",
-        h("select", {onchange: e => { w.ai = e.target.value; loadModels(); draw(); }},
-          [["off", "Stałe kadry z tematu"], ["local", "AI na tym komputerze (model lokalny)"], ["openrouter", "AI przez OpenRouter (miniatury klatek wychodzą do internetu)"]]
-            .map(([value, text]) => h("option", {value, selected: value === (w.ai || p.ai || "off")}, text))),
-        h("small", {class: "muted"}, "AI ogląda możliwe kadry każdego ujęcia i wybiera najlepszy. OpenRouter wymaga klucza OPENROUTER_API_KEY w pliku .env.")),
-      (w.ai || p.ai) === "openrouter" && h("div", {class: "ai-more"},
-        h("label", {class: "field"}, "Model",
-          h("input", {type: "text", list: "ai-models", value: w.aiModel, placeholder: p.ai_model || "", autocomplete: "off", spellcheck: "false",
-            oninput: e => { w.aiModel = e.target.value.trim(); }, onchange: () => draw()}),
-          h("datalist", {id: "ai-models"}, (aiModels || []).map(m => h("option", {value: m.id}, `${m.name}${m.reasoning ? " · reasoning" : ""} · $${m.prompt_usd_per_m}/mln tokenów`))),
-          h("small", {class: "muted"}, aiModels === null ? "Wczytuję listę modeli z OpenRouter…"
-            : aiModels.length ? `Zacznij pisać, żeby wybrać z ${aiModels.length} modeli, które przyjmują obrazy. Puste pole: ${p.ai_model}.`
-            : "Nie udało się pobrać listy modeli. Wpisz nazwę ręcznie, np. anthropic/claude-sonnet-5.5.")),
-        h("label", {class: "field"}, "Tokeny na reasoning",
-          h("input", {type: "number", min: 0, max: 200000, step: 1000, inputmode: "numeric", value: w.aiReasoning, placeholder: String(p.ai_reasoning || 0),
-            oninput: e => { w.aiReasoning = e.target.value; }}),
-          h("small", {class: "muted"}, reasoningNote()))),
-      toggle("review", "Chcę najpierw przejrzeć ujęcia", "Aplikacja zatrzyma się po wybraniu ujęć. Poprawisz je i dopiero wtedy ruszy render."),
-      w.films ? toggle("shots", "Zapisz też osobne ujęcia", "Każde ujęcie dodatkowo jako oddzielny plik, do montażu w telefonie.")
-        : toggle("films", "Zrób też gotowy film", "Oprócz osobnych ujęć sklej je w film."))));
-  const nothing = flight() && !themes().some(t => t.on);
-  rows.push(bar(h("button", {class: "btn", type: "button", onclick: () => { w.step = 1; draw(); }}, "Wstecz"),
-    h("button", {class: "btn primary", type: "button", disabled: nothing, onclick: () => { w.step = 3; draw(); }}, "Dalej", icon("right")),
-    nothing && "Zaznacz przynajmniej jeden film."));
-  return rows;
+// One kind of reel: a switch, and when it is on, how many and how long.
+function reelTile(t) {
+  const flip = () => { w.themes = {...Object.fromEntries(themes().map(x => [x.name, x.on])), [t.name]: !t.on}; draw(); };
+  const count = n => { w.counts[t.name] = Math.min(Math.max(n, 1), 12); draw(); };
+  return h("div", {class: `cell reel${t.on ? " on" : ""}`},
+    h("button", {class: "reel-pick", type: "button", "aria-pressed": String(t.on), onclick: flip},
+      h("span", {class: "tick"}, icon("check")),
+      h("span", {class: "h3"}, t.title), h("span", {class: "muted about"}, t.text)),
+    t.on && h("div", {class: "reel-opts"},
+      h("div", {class: "stepper-n", role: "group", "aria-label": `Ile rolek: ${t.title}`},
+        h("button", {class: "btn", type: "button", "aria-label": "O jedną mniej", disabled: t.count <= 1, onclick: () => count(t.count - 1)}, "−"),
+        h("b", {}, plural(t.count, "rolka", "rolki", "rolek")),
+        h("button", {class: "btn", type: "button", "aria-label": "O jedną więcej", disabled: t.count >= 12, onclick: () => count(t.count + 1)}, "+")),
+      h("label", {class: "secs"}, "po",
+        h("input", {type: "number", min: 5, max: 600, step: 5, inputmode: "numeric", "aria-label": `Długość rolki ${t.title} w sekundach`,
+          value: w.lengths[t.name] || "", placeholder: String(Math.round(+w.length || t.usual)),
+          oninput: e => { w.lengths[t.name] = e.target.value; }, onchange: () => draw()}), "s")),
+    !t.on && !t.def && h("div", {class: "reel-opts muted", style: "font-size:12px"}, "Zwykle wyłączona"));
 }
 
-// --- step 3: quality and start ------------------------------------------------------------------
 function summary() {
-  const q = quality(), factor = QUALITIES.find(x => x[0] === q.value)[3], film = filmSeconds();
-  let what;
+  const film = filmSeconds();
+  if (!w.films) return "Powstaną osobne ujęcia do własnego montażu, bez gotowych rolek.";
   if (flight()) {
-    const on = themes().filter(t => t.on);
-    const many = on.length > 1 && on.length < 5;
-    what = `${many ? "Powstaną" : "Powstanie"} ${plural(on.length, "film", "filmy", "filmów")} z lotu (${on.map(t => t.title).join(", ")}), razem około ${Math.round(film)} s`;
-    if (!w.films) what = `Powstaną osobne ujęcia z lotu (${on.map(t => t.title).join(", ")}), bez gotowego filmu`;
-  } else {
-    what = "Powstanie " + {day: "film z każdego dnia wyjazdu", trip: "jeden film z całego wyjazdu", both: "film z każdego dnia i jeden z całego wyjazdu"}[w.mode];
-    if (!w.films) what = "Powstaną osobne ujęcia z wyjazdu, bez gotowego filmu";
+    const on = themes().filter(t => t.on), n = on.reduce((sum, t) => sum + t.count, 0);
+    return `${plural(n, "rolka", "rolki", "rolek")}, razem około ${Math.round(film)} s materiału.`;
   }
-  const lead = what;
-  return `${lead}. ${w.review ? "Najpierw pokażę wybrane ujęcia do przejrzenia. Potem render potrwa" : "Potrwa to"} ${about(film * factor + 60)}${flight() ? "" : " na każdy film"}.`;
+  return {day: "Jeden film z każdego dnia wyjazdu.", trip: "Jeden film z całego wyjazdu.", both: "Film z każdego dnia i jeden z całego wyjazdu."}[w.mode];
 }
 
-function more() {
-  const names = meta.profiles.filter(p => !p.error).map(p => p.name), custom = w.profile === CUSTOM;
+// Everything that is usually right as it is: closed, one line says what is set.
+function settingsBlock() {
+  const p = profile() || {}, q = quality(), ai = aiDefault(), engine = aiEngine();
+  const names = meta.profiles.filter(x => !x.error).map(x => x.name), custom = w.profile === CUSTOM;
   const opt = (value, text, chosen) => h("option", {value, selected: value === chosen}, text);
-  return h("details", {open: w.more, ontoggle: e => { w.more = e.target.open; }},
-    h("summary", {}, "Więcej ustawień"),
+  const overlayOn = w.overlay == null ? !!p.overlay : w.overlay;
+  const qName = QUALITIES.find(x => x[0] === q.value)[1];
+  const aiName = {off: "stałe kadry", local: "AI na tym komputerze", openrouter: "AI przez internet"}[engine];
+  const chosenModel = (aiModels || []).find(m => m.id === (w.aiModel || ai.model));
+  const line = [`jakość: ${qName.toLowerCase()}`, `kadry: ${aiName}`, flight() ? `dane lotu na obrazie: ${overlayOn ? "tak" : "nie"}` : null,
+                w.auto ? "bez sprawdzania ujęć" : null].filter(Boolean).join(" · ");
+  return h("details", {open: w.more, ontoggle: e => { w.more = e.target.open; if (w.more) loadModels(); }},
+    h("summary", {}, "Ustawienia tych rolek", h("span", {class: "muted", style: "font-weight:400"}, ` (${line})`)),
+    h("p", {class: "muted", style: "font-size:13px;margin:8px 0 0"}, "Zwykle nie trzeba tu nic zmieniać. To, co wybierasz za każdym razem tak samo, ustaw raz w ",
+      h("a", {href: "#ustawienia"}, "Ustawieniach"), "."),
+    h("div", {class: "row c2", style: "margin-top:12px"},
+      h("div", {class: "cell tight"},
+        h("label", {class: "field"}, "Jakość rolek",
+          h("select", {onchange: e => { w.quality = e.target.value; draw(); }}, QUALITIES.map(([value, title, text]) =>
+            h("option", {value, selected: q.value === value, disabled: !q.can[value]}, `${title}: ${text}${q.can[value] ? "" : " (niedostępna)"}`))),
+          h("small", {class: "muted"}, "Zmienisz ją jeszcze tuż przed robieniem rolek, gdy zobaczysz ujęcia.")),
+        flight() && h("label", {class: "switch mt"}, h("input", {type: "checkbox", checked: overlayOn, onchange: e => { w.overlay = e.target.checked; draw(); }}),
+          h("span", {}, "Dane lotu na obrazie", h("small", {}, "Prędkość, wysokość i wznoszenie w rogu kadru."))),
+        w.films ? toggle("shots", "Zapisz też osobne ujęcia", "Każde ujęcie dodatkowo jako oddzielny plik, do własnego montażu.")
+          : toggle("films", "Zrób też gotowe rolki", "Oprócz osobnych ujęć sklej je w rolki."),
+        toggle("auto", "Zrób od razu, bez sprawdzania ujęć", "Aplikacja nie zatrzyma się, żeby pokazać wybrane ujęcia. Rolki powstaną w ciemno.")),
+      h("div", {class: "cell tight"},
+        h("label", {class: "field"}, "Kto wybiera kadry",
+          h("select", {onchange: e => { w.ai = e.target.value; loadModels(); draw(); }},
+            [["off", "Stałe kadry, zawsze takie same dla danego rodzaju rolki"], ["local", "AI na tym komputerze: nic nie wychodzi do internetu"],
+             ["openrouter", "AI przez internet (OpenRouter): najlepszy wybór, płatne"]]
+              .map(([value, text]) => h("option", {value, selected: value === engine}, text))),
+          h("small", {class: "muted"}, engine === "openrouter" ? "AI ogląda każde ujęcie dookoła i samo ustawia kamerę. Małe klatki z nagrania są wysyłane do OpenRouter."
+            : engine === "local" ? "Model na tym komputerze wybiera najładniejszy z gotowych kadrów. Nie rozumie sceny tak jak AI przez internet."
+            : "Kamera patrzy zawsze tam, gdzie przewiduje rodzaj rolki.")),
+        engine === "openrouter" && h("label", {class: "field mt"}, "Model AI",
+          h("input", {type: "text", list: "ai-models", value: w.aiModel, placeholder: ai.model, autocomplete: "off", spellcheck: "false",
+            oninput: e => { w.aiModel = e.target.value.trim(); }, onchange: () => draw()}),
+          h("datalist", {id: "ai-models"}, (aiModels || []).map(m => h("option", {value: m.id}, `${m.name}${m.reasoning ? " · z namysłem" : ""} · $${m.prompt_usd_per_m} za mln tokenów`))),
+          h("small", {class: "muted"}, aiModels === null ? "Wczytuję listę modeli…" : aiModels && aiModels.length ? `Puste pole: ${ai.model}. Zacznij pisać, żeby wybrać inny.` : "Wpisz nazwę modelu, np. anthropic/claude-sonnet-5.5.")),
+        engine === "openrouter" && h("label", {class: "field mt"}, "Ile AI może się namyślać (tokeny)",
+          h("input", {type: "number", min: 0, max: 200000, step: 1000, inputmode: "numeric", value: w.aiReasoning, placeholder: String(ai.reasoning),
+            oninput: e => { w.aiReasoning = e.target.value; }}),
+          h("small", {class: "muted"}, chosenModel && !chosenModel.reasoning ? "Ten model nie potrafi się namyślać: liczba zostanie pominięta."
+            : "0 = odpowiada od razu. Więcej = lepiej przemyślane rolki, ale drożej i dłużej.")))),
     h("div", {class: "row c3", style: "margin-top:12px"},
-      h("div", {class: "cell tight"}, h("label", {class: "field"}, "Zestaw ustawień (profil)",
+      h("div", {class: "cell tight"}, h("label", {class: "field"}, "Gdzie zapisać rolki",
+        h("input", {class: "mono", type: "text", value: w.out, autocomplete: "off", spellcheck: "false", placeholder: w.found ? w.found.out : "", oninput: e => { w.out = e.target.value; }}),
+        h("small", {class: "muted"}, "Puste pole: podfolder obok nagrań.")),
+        inWindow && h("button", {class: "btn small", type: "button", style: "margin-top:8px", onclick: guard(async () => {
+          const path = await chooseFolder(w.out || w.listing.path);
+          if (path) { w.out = path; draw(); }
+        })}, icon("folder"), "Wybierz inny folder…")),
+      h("div", {class: "cell tight"}, h("label", {class: "field"}, "Gdzie była zamocowana kamera",
+        h("select", {onchange: e => { w.mount = e.target.value; }}, opt("", "Jak zwykle dla tego rodzaju nagrań", w.mount), meta.mounts.map(m => opt(m.name, m.name, w.mount))))),
+      h("div", {class: "cell tight"}, h("label", {class: "field"}, "Zestaw ustawień",
         h("select", {onchange: e => { w.profile = e.target.value; w.themes = null; draw(); }},
-          opt("auto", "Automatycznie", w.profile), names.map(n => opt(n, n, w.profile)), opt(CUSTOM, "Własne, tylko dla tego filmu", w.profile)))),
-      h("div", {class: "cell tight"}, h("label", {class: "field"}, "Zamocowanie kamery",
-        h("select", {onchange: e => { w.mount = e.target.value; }}, opt("", "Jak w profilu", w.mount), meta.mounts.map(m => opt(m.name, m.name, w.mount))))),
-      h("div", {class: "cell tight"}, h("label", {class: "field"}, flight() ? "Długość każdego filmu (sekundy)" : "Długość filmu (sekundy)",
-        h("input", {type: "number", min: 5, step: 1, value: w.length, placeholder: "jak w profilu", oninput: e => { w.length = e.target.value; }})))),
+          opt("auto", "Dobierz sam", w.profile), names.map(n => opt(n, n, w.profile)), opt(CUSTOM, "Własny, tylko dla tych rolek", w.profile))))),
     custom && h("div", {class: "row"}, h("div", {class: "cell"},
-      h("div", {class: "h3"}, "Własne ustawienia tego filmu"),
+      h("div", {class: "h3"}, "Własny zestaw ustawień"),
+      h("p", {class: "muted", style: "font-size:13px"}, "Dla zaawansowanych: pełny plik ustawień, który można dowolnie zmieniać."),
       h("div", {class: "inline mt"},
-        h("select", {id: "c-base", "aria-label": "Na podstawie profilu", onchange: guard(loadBase)}, names.map(n => opt(n, `Na podstawie: ${n}`))),
+        h("select", {id: "c-base", "aria-label": "Na podstawie zestawu", onchange: guard(loadBase)}, names.map(n => opt(n, `Na podstawie: ${n}`))),
         h("select", {id: "c-format", "aria-label": "Format"}, opt("", "Format bez zmiany"), opt("1080x1920", "Pionowy 9:16"), opt("1920x1080", "Poziomy 16:9"), opt("1080x1080", "Kwadrat 1:1")),
         h("select", {id: "c-audio", "aria-label": "Dźwięk"}, opt("", "Dźwięk bez zmiany"), opt("1", "Dźwięk z nagrania"), opt("0", "Bez dźwięku")),
         h("button", {class: "btn", type: "button", onclick: guard(compose)}, "Wstaw do ustawień")),
@@ -243,8 +242,38 @@ function more() {
         h("textarea", {id: "c-yaml", rows: 14, spellcheck: "false", value: w.yaml, oninput: e => { w.yaml = e.target.value; }})),
       h("div", {class: "inline mt"},
         h("button", {class: "btn", type: "button", onclick: guard(async () => { await api("/api/config/profiles/validate", "POST", {text: w.yaml}); toast("Ustawienia są poprawne"); })}, "Sprawdź"),
-        h("input", {id: "c-name", type: "text", placeholder: "nazwa_nowego_profilu", autocomplete: "off", "aria-label": "Nazwa nowego profilu"}),
-        h("button", {class: "btn", type: "button", onclick: guard(saveCustom)}, "Zapisz jako nowy profil")))));
+        h("input", {id: "c-name", type: "text", placeholder: "nazwa_nowego_zestawu", autocomplete: "off", "aria-label": "Nazwa nowego zestawu"}),
+        h("button", {class: "btn", type: "button", onclick: guard(saveCustom)}, "Zapisz jako nowy zestaw")))));
+}
+
+function stepWhat() {
+  const p = profile() || {}, rows = [];
+  rows.push(h("div", {class: "row"}, h("div", {class: "cell"}, h("h1", {class: "title"}, flight() ? "Jakie rolki zrobić?" : "Jakie filmy zrobić?"),
+    h("p", {class: "sub"}, flight() ? "Zaznacz rodzaje rolek. Z długiego lotu możesz zrobić po kilka rolek każdego rodzaju: każda weźmie inne momenty."
+      : "Wybierz, jak podzielić nagrania z wyjazdu."))));
+  if (flight()) {
+    rows.push(h("div", {class: "row c3"}, themes().map(reelTile)));
+  } else {
+    const mine = w.people || p.people || [];
+    rows.push(h("div", {class: "row c3"}, [["day", "Film na każdy dzień", "Osobny film z każdego dnia wyjazdu."], ["trip", "Jeden film z wyjazdu", "Wszystkie dni w jednym filmie."],
+      ["both", "Jedno i drugie", "Film z każdego dnia i dodatkowo jeden z całości."]].map(([value, title, text]) => pick(w.mode === value, title, text, null, () => { w.mode = value; draw(); }))));
+    rows.push(h("div", {class: "row c2"},
+      h("div", {class: "cell"}, h("label", {class: "field"}, "Długość filmu z jednego dnia (sekundy)",
+        h("input", {type: "number", min: 5, step: 5, inputmode: "numeric", value: w.length, placeholder: `${p.length || 120} (zwykle)`, oninput: e => { w.length = e.target.value; }}),
+        h("small", {class: "muted"}, "Gdy w danym dniu jest mniej dobrego materiału, film wyjdzie krótszy."))),
+      h("div", {class: "cell"}, h("div", {class: "field"}, "Kogo szukać w nagraniach"),
+        meta.people.length ? h("div", {class: "checks", style: "margin-top:8px"}, meta.people.map(name => h("label", {class: "check"},
+            h("input", {type: "checkbox", checked: mine.includes(name), onchange: e => { const set = new Set(w.people || p.people || []); e.target.checked ? set.add(name) : set.delete(name); w.people = [...set]; }}), name)))
+          : h("p", {class: "muted", style: "font-size:14px;margin-top:6px"}, "Lista osób jest pusta. Dodasz je w zakładce „Osoby”."))));
+  }
+  rows.push(h("div", {class: "row"}, h("div", {class: "cell"}, settingsBlock())));
+  const nothing = flight() && !themes().some(t => t.on);
+  rows.push(bar(h("button", {class: "btn", type: "button", onclick: () => { w.step = 1; draw(); }}, "Wstecz"),
+    h("button", {class: "btn primary big", type: "button", disabled: nothing, onclick: guard(submit)}, w.auto ? icon("film") : icon("eye"),
+      w.auto ? "Zrób od razu" : "Znajdź najlepsze momenty"),
+    nothing ? "Zaznacz przynajmniej jeden rodzaj rolki."
+      : `${summary()} ${w.auto ? "Rolki powstaną bez pytania o ujęcia." : "Szukanie potrwa parę minut. Potem pokażę wybrane ujęcia, zanim cokolwiek zacznie się robić."}`));
+  return rows;
 }
 
 async function loadBase() { w.yaml = (await api(`/api/config/profiles/${$("#c-base").value}`)).text; $("#c-yaml").value = w.yaml; }
@@ -267,52 +296,27 @@ async function saveCustom() {
   draw();
 }
 
-function stepStart() {
-  const q = quality(), film = filmSeconds();
-  const why = {best: q.full ? "Niedostępna na tym komputerze: brak programu do sklejania Media SDK." : "Niedostępna: w folderze nie ma plików w pełnej jakości (.insv), są tylko podglądy.",
-               good: "Niedostępna: w folderze nie ma plików w pełnej jakości (.insv), są tylko podglądy.",
-               fast: "Niedostępny: w folderze nie ma plików podglądu z kamery."};
-  return [
-    h("div", {class: "row"}, h("div", {class: "cell"}, h("h1", {class: "title"}, "Jakość i start"),
-      h("p", {class: "sub"}, "Im lepsza jakość, tym dłużej to trwa. Komputer może w tym czasie robić coś innego."))),
-    h("div", {class: "row c3"}, QUALITIES.map(([value, title, text, factor]) => pick(q.value === value, title, q.can[value] ? text : why[value],
-      [h("span", {class: "tag"}, value === "fast" ? "poniżej minuty na film" : `ok. ${factor} s pracy na sekundę filmu`), q.can[value] && value !== "fast" && h("span", {class: "tag plain"}, about(film * factor + 60))],
-      () => { w.quality = value; draw(); }, !q.can[value]))),
-    h("div", {class: "row"}, h("div", {class: "cell"},
-      h("label", {class: "field"}, "Gdzie zapisać filmy",
-        h("input", {class: "mono", type: "text", value: w.out, autocomplete: "off", spellcheck: "false", placeholder: w.found ? w.found.out : "", oninput: e => { w.out = e.target.value; }})),
-      inWindow && h("button", {class: "btn small", type: "button", style: "margin-top:8px", onclick: guard(async () => {
-        const path = await chooseFolder(w.out || w.listing.path);
-        if (path) { w.out = path; draw(); }
-      })}, icon("folder"), "Wybierz inny folder…"),
-      h("p", {class: "muted", style: "font-size:13px;margin-top:8px"}, "Puste pole oznacza folder pokazany wyżej: podfolder obok nagrań. Możesz wpisać inny, na przykład na szybszym dysku."))),
-    h("div", {class: "row"}, h("div", {class: "cell"}, h("div", {class: "spread"},
-      h("div", {style: "flex:1 1 320px;min-width:0"}, h("div", {class: "h3"}, w.listing.path.split(/[\\/]/).filter(Boolean).pop() || w.listing.path), h("p", {class: "sub", id: "w-summary"}, summary())),
-      h("button", {class: "btn primary big", type: "button", onclick: guard(submit)}, icon("film"), w.films ? "Zrób film" : "Zrób ujęcia")))),
-    h("div", {class: "row"}, h("div", {class: "cell"}, more())),
-    bar(h("button", {class: "btn", type: "button", onclick: () => { w.step = 2; draw(); }}, "Wstecz")),
-  ];
-}
-
 async function submit() {
-  const p = profile() || {}, custom = w.profile === CUSTOM, list = themes();
+  const p = profile() || {}, custom = w.profile === CUSTOM, list = themes(), ai = aiDefault(), engine = aiEngine();
   const people = w.people && !flight() && JSON.stringify([...w.people].sort()) !== JSON.stringify([...(p.people || [])].sort()) ? w.people : [];
   const job = await api("/api/jobs", "POST", {folder: w.listing.path, options: {
     out: w.out.trim(), profile: custom ? "auto" : profileName(), profile_yaml: custom ? w.yaml : "", mount: w.mount,
     length: +w.length || null,
+    counts: flight() ? Object.fromEntries(list.filter(t => t.on && t.count > 1).map(t => [t.name, t.count])) : {},
     lengths: flight() ? Object.fromEntries(list.filter(t => t.on && +w.lengths[t.name] >= 5 && +w.lengths[t.name] !== t.usual).map(t => [t.name, +w.lengths[t.name]])) : {},
     enable: flight() ? list.filter(t => t.on && !t.def).map(t => t.name) : [],
     disable: flight() ? list.filter(t => !t.on && t.def).map(t => t.name) : [],
     mode: flight() ? "day" : w.mode, people,
     overlay: w.overlay == null || w.overlay === !!p.overlay ? null : w.overlay,
-    ai_framing: w.ai && w.ai !== (p.ai || "off") ? w.ai : null,
-    ai_model: (w.ai || p.ai) === "openrouter" && w.aiModel && w.aiModel !== p.ai_model ? w.aiModel : "",
-    ai_reasoning: (w.ai || p.ai) === "openrouter" && w.aiReasoning !== "" && +w.aiReasoning !== (p.ai_reasoning || 0) ? +w.aiReasoning : null,
-    review: w.review, shots: w.shots, films: w.films, quality: quality().value,
+    ai_framing: w.ai && w.ai !== ai.engine ? w.ai : null,
+    ai_model: engine === "openrouter" && w.aiModel && w.aiModel !== ai.model ? w.aiModel : "",
+    ai_reasoning: engine === "openrouter" && w.aiReasoning !== "" && +w.aiReasoning !== ai.reasoning ? +w.aiReasoning : null,
+    review: !w.auto, shots: w.shots, films: w.films, quality: quality().value,
   }});
-  toast(job.existing && job.status === "running" ? "Ten film właśnie powstaje, nic nie zmieniłem" : "Zaczynam. Postęp zobaczysz tutaj.");
+  const auto = w.auto;
+  toast(job.existing && job.status === "running" ? "Te nagrania są właśnie w robocie, nic nie zmieniłem" : auto ? "Zaczynam. Postęp zobaczysz tutaj." : "Szukam najlepszych momentów.");
   w = null;
-  location.hash = `#filmy/${job.id}`;
+  location.hash = auto ? `#filmy/${job.id}` : `#filmy/${job.id}/ujecia`;
 }
 
 // --- the frame of every step ------------------------------------------------------------------
@@ -320,27 +324,25 @@ const bar = (back, next, note) => h("div", {class: "bar"}, back, h("span", {clas
 
 function draw() {
   if (!w || !view.isConnected) return;
-  setContext("Nowy film", STEPS[w.step - 1]);
-  const stepper = h("div", {class: "row"}, h("ol", {class: "stepper", "aria-label": "Kroki"}, STEPS.map((name, i) => {
-    const n = i + 1, open = n < w.step;
-    return h("li", {"aria-current": n === w.step ? "step" : null, class: open ? "done" : null},
-      open ? h("button", {type: "button", onclick: () => { w.step = n; draw(); }}, name) : h("span", {}, name));
-  })));
+  setContext("Nowe rolki", STEPS[w.step - 1]);
   const top = window.scrollY;
-  view.replaceChildren(stepper, ...(w.step === 1 ? stepFolder() : w.step === 2 ? stepWhat() : stepStart()).filter(Boolean));
+  view.replaceChildren(flowSteps(w.step, n => { w.step = n; draw(); }), ...(w.step === 1 ? stepFolder() : stepWhat()).filter(Boolean));
   window.scrollTo(0, top);
-  if (w.step === 3 && w.profile === CUSTOM && !w.yaml) guard(loadBase)();
+  if (w.step === 2 && w.profile === CUSTOM && !w.yaml && $("#c-base")) guard(loadBase)();
 }
 
-export async function show(root, [preset]) {
+export async function show(root, [preset, from]) {
   view = root;
   meta = await api("/api/meta");
-  if (!w || preset) w = fresh(preset || "");
-  if (preset) history.replaceState(null, "", "#nowy");   // coming back to "Nowy film" keeps the answers instead of starting over
+  const again = preset === "z" && live.jobs.find(j => j.id === +from);      // other reels from recordings already known
+  if (again) w = fresh(again.kind === "holiday" ? "urlop" : "lot");
+  else if (!w || preset) w = fresh(preset || "");
+  if (preset) history.replaceState(null, "", "#nowy");   // coming back to "Nowe rolki" keeps the answers instead of starting over
   if (!w.listing) {
     w.listing = await api("/api/folders?path=");
     draw();
     const last = store.get("folder", "");
-    if (last && !w.listing.recent.length) browse(last);
+    if (again) { await browse(again.folder); if (w && w.found && w.found.usable) { w.step = 2; draw(); } }
+    else if (last && !w.listing.recent.length) browse(last);
   } else draw();
 }

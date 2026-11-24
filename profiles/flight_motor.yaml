@@ -45,6 +45,7 @@ detection:
   circling_gap_s: 15
   thermal_min_s: 40
   thermal_min_turn_deg: 360
+  split_long_s: 240            # a long climb or cruise becomes several scenes, so it can give several shots
   glide_min_s: 30
   circuit_agl_m: 300
   circuit_max_s: 360

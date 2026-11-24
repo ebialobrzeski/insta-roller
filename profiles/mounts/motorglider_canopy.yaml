@@ -5,7 +5,9 @@
 name: motorglider_canopy
 
 calibration:
-  dual_fisheye: {lens_fov: 200, yaw: 0, pitch: 0, roll: 0}
+  # The camera sits on a suction cup and gets moved, also in flight: where it is level and
+  # where the nose is are worked out for every scene from its sensors (auto_nose).
+  dual_fisheye: {lens_fov: 200, auto_level: true, auto_nose: true}
   equirect: {yaw: 0, pitch: 0, roll: 0}
 
 # The second person: `pilot_wide: crew` shows both seats; point it at

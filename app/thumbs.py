@@ -22,12 +22,11 @@ def thumbnails(job) -> None:
     recordings = {r.id: r for r in job.recordings}
     main = job.recording if profile.kind == "flight" else job.recordings[0]
     levels = {}
-    if profile.kind != "flight":
-        try:
-            from core import holiday
-            levels = holiday.levels(job, scenes) or {}
-        except Exception as error:                      # thumbnails are still useful unlevelled
-            print(f"thumbnails: no horizon levels ({error})")
+    try:
+        from core import holiday
+        levels = holiday.levels(job, scenes) or {}      # scene id -> tilt found from the sensors
+    except Exception as error:                          # thumbnails are still useful unlevelled
+        print(f"thumbnails: no horizon levels ({error})")
 
     folder = job.path("review")
     folder.mkdir(parents=True, exist_ok=True)
@@ -50,7 +49,7 @@ def thumbnails(job) -> None:
                 view = frame_shot([preset], 1.0, mount, 0.0, profile.safe_zone, size, scene.attrs)[0]
                 rec = recordings.get(scene.recording, main)
                 render.still(rec, mount, (scene.start_s + scene.end_s) / 2, view, size, out, job.work, job.log,
-                             level=levels.get(rec.id))
+                             level=levels.get(scene.id))
             except Exception as error:
                 failed += 1
                 print(f"thumbnails: {scene.id}: {error}")

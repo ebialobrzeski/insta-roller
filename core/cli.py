@@ -17,7 +17,7 @@ from .igc import Fix, parse_igc
 from .ingest import Recording, discover, fingerprint
 from .phases import build_track, detect_phases, phases_from_gyro
 from .reel import plan_reels
-from .scenes import build_scenes, telemetry_samples
+from .scenes import build_scenes, split_long, telemetry_samples
 
 
 def _hms(seconds: float) -> str:
@@ -62,9 +62,12 @@ class Job:
         names = self.args.themes.split(",") if self.args.themes else self.profile.themes
         themes = [load_theme(n.strip()) for n in names if n.strip()]
         lengths = dict(item.split("=", 1) for item in (getattr(self.args, "lengths", None) or "").split(",") if "=" in item)
+        counts = dict(item.split("=", 1) for item in (getattr(self.args, "counts", None) or "").split(",") if "=" in item)
         for theme in themes:
             if theme.name in lengths:               # this job's own length for the reel
                 theme.target_length_s = float(lengths[theme.name])
+            if theme.name in counts:                # ... and how many reels of it
+                theme.count = min(max(int(counts[theme.name]), 1), 12)
             if theme.name in (self.args.enable or "").split(","):
                 theme.enabled = True
             if theme.name in (self.args.disable or "").split(","):
@@ -156,10 +159,8 @@ class Job:
         if exe is not None and self.args.source in ("auto", "sdk"):
             stitcher = stitch.Stitcher(exe, self.work / "stitched", self.args.cache_gb,
                                        local_sources=self.args.copy_local)
-        levels = None
-        if self.profile.kind != "flight":
-            from . import holiday
-            levels = holiday.levels(self, scenes)
+        from . import holiday                   # scene id -> the tilt (and nose) found for it, any kind of job
+        levels = holiday.levels(self, scenes) or None
         return render.Context(recordings, self.mount, self.profile, self.work, self.log, tele, levels,
                               stitcher, "proxy" if self.args.source == "proxy" else "auto")
 
@@ -181,7 +182,8 @@ def step_analyze(job: Job) -> Scenes:
     fp = fingerprint(igc or "no igc", *rec.files, profile.detection.model_dump_json(), profile.aircraft,
                      {k: v.base_score for k, v in profile.scene_types.items()},
                      profile.thermal_good_climb_ms, profile.thermal_low_agl_m, profile.thermal_low_bonus,
-                     profile.sync.model_dump_json(), job.args.offset, job.args.video_start, 2)
+                     profile.sync.model_dump_json(), job.args.offset, job.args.video_start,
+                     job.mount.model_dump_json(include={"calibration"}), 3)
     path = job.path("scenes.json")
     if path.exists() and job.path("telemetry.json").exists() and not job.args.force:
         cached = contracts.read(path, Scenes)
@@ -189,6 +191,7 @@ def step_analyze(job: Job) -> Scenes:
             print(f"analyze: cached ({len(cached.scenes)} scenes)")
             return cached
 
+    print("analyze: reading the camera's sensors", flush=True)
     cam = job.sensors(rec)
     fixes, source = None, "gyro"
     if igc is not None:
@@ -198,6 +201,7 @@ def step_analyze(job: Job) -> Scenes:
         fixes, source = [Fix(float(r[0]), float(r[1]), float(r[2]), float(r[3])) for r in g], "camera_gps"
 
     # Video clock -> UTC.
+    print("analyze: matching the video to the flight log", flush=True)
     result, correlation = None, None
     if job.args.video_start:
         base = datetime.fromisoformat(job.args.video_start.replace("Z", "+00:00"))
@@ -217,6 +221,7 @@ def step_analyze(job: Job) -> Scenes:
     if job.args.offset:
         method += " + manual offset"
 
+    print("analyze: finding the phases of the flight", flush=True)
     samples = []
     if fixes:
         track_ = build_track(fixes, profile.detection)
@@ -238,6 +243,20 @@ def step_analyze(job: Job) -> Scenes:
     else:
         sys.exit(f"No IGC file, no GPS and no gyroscope data for {rec.id}: nothing to find scenes with.")
     scenes, missing = build_scenes(phases, start, rec.duration_s, profile)
+    scenes = split_long(scenes, profile.detection.split_long_s)
+    cal = rec.calibration(job.mount)
+    if cal is not None and cal.auto_nose and cam.has_imu:       # a camera that is not in a fixed place
+        from . import mountcal
+        speed = np.array([[x.t, x.speed_kmh / 3.6] for x in samples]) if samples else None
+        found = mountcal.calibrate(cam.imu, [(x.start_s, x.end_s) for x in scenes], speed)
+        known = [(x, f) for x, f in zip(scenes, found) if f is not None]
+        for scene, f in zip(scenes, found):                     # a scene the sensors say nothing about takes its neighbour's
+            if f is None and known:
+                f = min(known, key=lambda k: abs(k[0].start_s - scene.start_s))[1]
+            if f is not None:
+                scene.attrs["level"] = [float(v) for v in f]
+        print(f"analyze: camera position found from its sensors for {len(known)} of {len(scenes)} scenes"
+              + ("" if known else "; the mount's fixed angles are used"))
     info = RecordingInfo(id=rec.id, kind=rec.kind, files=[f.name for f in rec.files],
                          duration_s=round(rec.duration_s, 2), start_utc=start)
     result = Scenes(fingerprint=fp, recording=info, recordings=[info], source=source,
@@ -295,7 +314,8 @@ def step_plan(job: Job) -> list[FramingPlan]:
                 entry.length_s, entry.shots = reel.length_s, len(reel.shots)
         if ai_ctx is not None and not reel.edited:      # a model chooses among the possible framings
             from . import aiframe
-            theme = themes.get(reel.theme) or (job.themes[0] if job.profile.kind != "flight" else None)
+            from .reel import base_theme
+            theme = themes.get(base_theme(reel.theme)[0]) or (job.themes[0] if job.profile.kind != "flight" else None)
             reel = aiframe.apply(reel, scenes.scenes, job.profile, job.mount, theme, ai_ctx)
         framing = plan_framing(reel, job.profile, job.mount, tele, calibration)
         # An unchanged reel plan keeps its framing plan, so manual edits survive.
@@ -432,6 +452,7 @@ def main(argv: list[str] | None = None) -> None:
         p.add_argument("--enable", help="comma-separated themes to switch on, e.g. landing")
         p.add_argument("--disable", help="comma-separated themes to switch off")
         p.add_argument("--length", type=float, help="length of every reel in seconds (default: from theme / profile)")
+        p.add_argument("--counts", help="how many reels per theme, each from other scenes, e.g. thermal=3,glide_views=2")
         p.add_argument("--lengths", help="length per reel theme in seconds, e.g. thermal=40,surprise=60")
         p.add_argument("--mode", choices=["day", "trip", "both"], default="day",
                        help="holiday: one film per day, one film of the whole trip, or both")

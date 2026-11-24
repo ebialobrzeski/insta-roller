@@ -164,6 +164,13 @@ def plan_framing(reel: ReelPlan, profile: Profile, mount: Mount, telemetry: Tele
     shots = []
     for s in reel.shots:
         own = shot_mount(mount, s)
+        # The projection cannot change inside a shot. A plan that mixes them (a hand edit)
+        # keeps the views in the projection of the first one, so the film is still made.
+        first = own.presets[s.framing[0]].projection
+        if any(own.presets[name].projection != first for name in s.framing):
+            kept = [name for name in s.framing if own.presets[name].projection == first]
+            print(f"plan: shot {s.index} ({s.scene_id}) mixed projections; kept {kept} of {s.framing}")
+            s = s.model_copy(update={"framing": kept})
         frames = frame_shot(s.framing, s.duration_s, own, profile.transition_s * s.speed, profile.safe_zone,
                             (out.width, out.height), s.attrs, s.start_s,
                             profile.max_turn_dps / s.speed, profile.max_track_dps / s.speed)
@@ -172,9 +179,6 @@ def plan_framing(reel: ReelPlan, profile: Profile, mount: Mount, telemetry: Tele
         if telemetry and telemetry.samples and needs:
             frames = level_horizon(frames, locked, s, telemetry, stabilized)
         projections = {own.presets[name].projection for name in s.framing}
-        if len(projections) > 1:                # the projection cannot change inside a shot
-            raise ValueError(f"shot {s.index} ({s.scene_id}) mixes projections {sorted(projections)}: "
-                             f"presets {s.framing} must share one")
         shots.append(FramedShot(index=s.index, scene_id=s.scene_id, start_s=s.start_s, duration_s=s.duration_s,
                                 keyframes=frames, recording=s.recording, speed=s.speed, type=s.type,
                                 projection=projections.pop()))

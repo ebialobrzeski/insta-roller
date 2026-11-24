@@ -50,6 +50,20 @@ def build_scenes(phases: list[Phase], video_start_utc: float, duration_s: float,
     return scenes, [t for t in missing if t not in present]
 
 
+def split_long(scenes: list[Scene], chunk_s: float, types: tuple[str, ...] = ("glide", "climb", "thermal")) -> list[Scene]:
+    """A scene gives a reel one shot. An hour of straight flight as one scene would
+    give one shot of it, so long glides, climbs and thermals are cut into parts of
+    about chunk_s; each part is a scene of its own. Ids are numbered again."""
+    out: list[Scene] = []
+    for s in scenes:
+        length = s.end_s - s.start_s
+        parts = int(round(length / chunk_s)) if chunk_s > 0 and s.type in types and length >= 2 * chunk_s else 1
+        for k in range(parts):
+            a, b = s.start_s + length * k / parts, s.start_s + length * (k + 1) / parts
+            out.append(s.model_copy(update={"start_s": round(a, 2), "end_s": round(b, 2), "attrs": dict(s.attrs)}))
+    return [s.model_copy(update={"id": f"{i:03d}_{s.type}"}) for i, s in enumerate(out)]
+
+
 def telemetry_samples(track: Track, video_start_utc: float, duration_s: float) -> list[TelemetrySample]:
     """Speed, altitude, vario and bank for every second of the video the track covers."""
     out = []

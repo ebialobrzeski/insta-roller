@@ -129,7 +129,8 @@ def analyze(job) -> Scenes:
             return cached
     base = {k: v.base_score for k, v in profile.scene_types.items()}
     scenes, infos, lines = [], [], []
-    for rec in recordings:
+    for number, rec in enumerate(recordings, 1):
+        print(f"  shot {number}/{len(recordings)}  clip {rec.id}", flush=True)       # progress, as render prints it
         cam = job.sensors(rec)
         day = day_of(rec.id, cfg)
         level = np.concatenate([audio.level_db(f) for f in rec.best().files] or [np.zeros(0)])
@@ -249,7 +250,9 @@ def annotate_people(job, recordings: dict[str, Recording], scenes: list[Scene]) 
         weights = {n: job.profile.people.get(n, 1.0) for n in names} if names else dict(job.profile.people)
         types = job.profile.scene_types
         shown: dict[str, float] = {}
-        for scene in scenes:
+        print(f"people: looking for {len(weights)} known people in {len(scenes)} scenes", flush=True)
+        for number, scene in enumerate(scenes, 1):
+            print(f"  shot {number}/{len(scenes)}  faces {scene.id}", flush=True)
             level = tuple(scene.attrs["level"]) if "level" in scene.attrs else None
             span = scene.end_s - scene.start_s
             times = sorted({round(scene.start_s + min(1.0, span / 4), 2), round(scene.start_s + span / 2, 2),

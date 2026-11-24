@@ -10,6 +10,7 @@ from .config import Mount, Profile, Theme
 from .contracts import ReelEntry, ReelPlan, Scene, Shot
 
 MIN_SHOT_S = 2.0
+SPREAD = 0.6        # how much a scene loses when it sits right beside one already chosen (0 = score alone)
 
 
 def resolve_framing(names: list[str], scene: Scene, mount: Mount) -> list[str]:
@@ -83,22 +84,41 @@ def plan_reel(scenes: list[Scene], profile: Profile, theme: Theme, mount: Mount,
         ending = (last, last.end_s - length, length)
         budget -= length
 
-    # Best scenes first, while their minimum lengths still fit.
+    # Best scenes first, while their minimum lengths still fit. A scene close in the
+    # recording to one already taken counts for less, so the reel draws on the whole
+    # flight (or day) instead of on its first good stretch: equal scores used to
+    # resolve to the earliest scenes.
     chosen: list[Scene] = []
     lengths: dict[str, float] = {}
     caps: dict[str, float] = {}
     per_type: dict[str, int] = {}
-    for s in sorted(pool, key=lambda s: -s.score * types[s.type].weight):
+    order = sorted(pool, key=_order)
+    place = {s.id: i / max(len(order) - 1, 1) for i, s in enumerate(order)}
+    usual = sum(types[s.type].min_shot_s for s in pool) / max(len(pool), 1) or 1.0
+    reach = 1.0 / max(budget / usual, 1.0)             # how far apart the shots of an even reel would be
+
+    def worth(s: Scene) -> float:
+        gap = min((abs(place[s.id] - place[c.id]) for c in chosen), default=1.0)
+        return s.score * types[s.type].weight * (1 - SPREAD + SPREAD * min(gap / reach, 1.0))
+
+    def fits(s: Scene) -> float | None:
         room = span(s)
         if ending and s.id == ending[0].id:
             room -= ending[2]
         need = min(types[s.type].min_shot_s, room)
         if need < MIN_SHOT_S or per_type.get(s.type, 0) >= theme.max_per_type.get(s.type, 10 ** 6):
-            continue
-        if sum(lengths.values()) + need > budget:
-            continue
+            return None
+        return None if sum(lengths.values()) + need > budget else room
+
+    left = list(pool)
+    while left:
+        open_ = [(s, room) for s in left if (room := fits(s)) is not None]
+        if not open_:
+            break
+        s, room = max(open_, key=lambda item: (worth(item[0]), -place[item[0].id]))
+        left.remove(s)
         chosen.append(s)
-        lengths[s.id] = need
+        lengths[s.id] = min(types[s.type].min_shot_s, room)
         caps[s.id] = min(types[s.type].max_shot_s, room)
         per_type[s.type] = per_type.get(s.type, 0) + 1
 
@@ -145,33 +165,59 @@ def material_s(scenes: list[Scene], profile: Profile, theme: Theme, used: frozen
                and (theme.borrows or s.id not in used))
 
 
+PART = "_p"         # the second reel of a theme is <theme>_p2, the third <theme>_p3
+
+
+def part_name(theme: str, number: int) -> str:
+    return theme if number <= 1 else f"{theme}{PART}{number}"
+
+
+def base_theme(name: str) -> tuple[str, int]:
+    """thermal_p3 -> ("thermal", 3); thermal -> ("thermal", 1)."""
+    head, sep, tail = name.rpartition(PART)
+    return (head, int(tail)) if sep and head and tail.isdigit() else (name, 1)
+
+
 def plan_reels(scenes: list[Scene], profile: Profile, themes: list[Theme], mount: Mount,
                length_s: float | None = None) -> tuple[list[ReelPlan], list[ReelEntry]]:
-    """One reel per enabled theme with enough material. length_s overrides every theme's own length."""
+    """One reel per enabled theme with enough material, or `count` reels of it, each from
+    scenes the earlier ones left. length_s overrides every theme's own length."""
     barred = frozenset(barred_types(themes))
     used: set[str] = set()
     plans: list[ReelPlan] = []
     entries: list[ReelEntry] = []
     for theme in sorted(themes, key=lambda t: t.borrows):      # borrowers choose last
         target = length_s or theme.target_length_s or profile.target_length_s
-        entry = ReelEntry(theme=theme.name, tag=tag(theme.name, target), status="skipped")
-        entries.append(entry)
-        if not theme.enabled:
-            entry.reason = "theme is switched off"
-            continue
-        have = material_s(scenes, profile, theme, frozenset(used), barred)
-        if have < max(theme.min_material_s, MIN_SHOT_S):
-            entry.reason = f"not enough material ({have:.0f}s of {theme.min_material_s:g}s needed)"
-            continue
-        plan = plan_reel(scenes, profile, theme, mount, target, frozenset(used), barred)
-        if not plan.shots:
-            entry.reason = "no scene fits the length"
-            continue
-        if not theme.borrows:
-            used.update(s.scene_id for s in plan.shots)
-        entry.status, entry.length_s, entry.shots = "planned", plan.length_s, len(plan.shots)
-        plans.append(plan)
+        own: set[str] = set()                                   # what the parts of a borrowing theme took
+        for number in range(1, max(theme.count, 1) + 1):
+            name = part_name(theme.name, number)
+            entry = ReelEntry(theme=name, tag=tag(name, target), status="skipped")
+            entries.append(entry)
+            if not theme.enabled:
+                entry.reason = "theme is switched off"
+                break
+            taken = frozenset(own if theme.borrows else used)
+            pool = scenes if not theme.borrows else [s for s in scenes if s.id not in own]
+            have = material_s(pool, profile, theme, taken, barred)
+            if have < max(theme.min_material_s, MIN_SHOT_S):
+                entry.reason = f"not enough material ({have:.0f}s of {theme.min_material_s:g}s needed)"
+                continue
+            plan = plan_reel(pool, profile, theme, mount, target, taken, barred)
+            if not plan.shots:
+                entry.reason = "no scene fits the length"
+                continue
+            picked = {s.scene_id for s in plan.shots if s.type != "ending"}
+            (own if theme.borrows else used).update(picked)
+            plan.theme = name
+            if theme.count > 1:
+                plan.title = f"{theme.title or theme.name} {number}"
+            entry.status, entry.length_s, entry.shots = "planned", plan.length_s, len(plan.shots)
+            plans.append(plan)
     order = [t.name for t in themes]
-    plans.sort(key=lambda p: order.index(p.theme))
-    entries.sort(key=lambda e: order.index(e.theme))
+
+    def rank(name: str) -> tuple[int, int]:
+        base, number = base_theme(name)
+        return order.index(base), number
+    plans.sort(key=lambda p: rank(p.theme))
+    entries.sort(key=lambda e: rank(e.theme))
     return plans, entries

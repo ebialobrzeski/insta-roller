@@ -50,6 +50,30 @@ def _themes(profile, **enabled):
 
 
 # --- stage 2 ---------------------------------------------------------------
+def test_several_reels_of_one_theme_take_different_scenes(profile, mount):
+    from core.reel import base_theme
+    scenes = [Scene(id=f"{i:03d}_{kind}", type=kind, start_s=i * 300.0, end_s=i * 300.0 + 120, score=0.5 + (i % 3) / 10,
+                    attrs={"direction": "left"}) for i in range(24) for kind in ("thermal", "glide")]
+    themes = [load_theme("thermal"), load_theme("glide_views"), load_theme("flight_summary")]
+    themes[0].count, themes[2].count = 3, 2
+    plans, entries = plan_reels(scenes, profile, themes, mount)
+    names = [p.theme for p in plans]
+    assert names == ["thermal", "thermal_p2", "thermal_p3", "glide_views", "flight_summary", "flight_summary_p2"]
+    parts = [{s.scene_id for s in p.shots} for p in plans[:3]]
+    assert not (parts[0] & parts[1]) and not (parts[1] & parts[2]) and not (parts[0] & parts[2])
+    assert plans[1].title == "Komin 2" and base_theme("thermal_p3") == ("thermal", 3) and base_theme("thermal") == ("thermal", 1)
+    summary = [{s.scene_id for s in p.shots if s.type != "ending"} for p in plans[4:]]
+    assert not (summary[0] & summary[1])                 # the second summary is another cut of the flight
+    for p in plans[:3]:                                   # every reel reaches across the recording, not one corner of it
+        starts = [s.start_s for s in p.shots]
+        assert max(starts) - min(starts) > 24 * 300 * 0.4
+    assert [e.tag for e in entries][:3] == ["thermal_30s", "thermal_p2_30s", "thermal_p3_30s"]
+    themes[0].count = 12                                  # more than the material allows: the rest is left out, with a reason
+    plans, entries = plan_reels(scenes, profile, themes, mount)
+    left = [e for e in entries if e.theme.startswith("thermal") and e.status == "skipped"]
+    assert left and all("not enough material" in e.reason or "no scene" in e.reason for e in left)
+
+
 def test_surprise_reel_varies_its_framing_and_speeds_up_the_launch(scenes, profile, mount):
     plans, _ = plan_reels(scenes, profile, _themes(profile), mount)
     reel = next(p for p in plans if p.theme == "surprise")
@@ -85,11 +109,11 @@ def test_holiday_surprise_is_one_more_film_of_the_whole_trip():
     assert sum(p.theme.startswith("day_") for p in plans) == 2
 
 
-def test_a_shot_cannot_mix_projections(profile, mount):
+def test_a_shot_that_mixes_projections_keeps_the_first_one(profile, mount):
     reel = ReelPlan(theme="x", target_length_s=6, length_s=6, shots=[
-        Shot(index=1, scene_id="a", type="thermal", start_s=0, duration_s=6, framing=["front", "planet"])])
-    with pytest.raises(ValueError, match="projections"):
-        plan_framing(reel, profile, mount)
+        Shot(index=1, scene_id="a", type="thermal", start_s=0, duration_s=6, framing=["wing_left", "bubble", "front"])])
+    shot = plan_framing(reel, profile, mount).shots[0]
+    assert shot.projection == "flat" and len(shot.keyframes) == 4       # wing_left -> front; the fisheye view is left out
 
 
 def test_several_reels_share_no_scene_and_landing_is_off(scenes, profile, mount):
@@ -474,3 +498,50 @@ def test_overlay_can_sit_lower_than_the_safe_zone():
     low = overlay.position(Overlay(enabled=True, bottom=0.07), frame, zone)
     assert low[0] == high[0] and low[1] > high[1] + 200
     assert low[1] + overlay.canvas_size(Overlay(enabled=True), 1080)[1] <= 1920 * 0.93 + 1
+
+
+# --- a camera that is not in a fixed place ----------------------------------------
+def test_nose_is_found_from_how_the_aircraft_rolls_into_turns():
+    from core import mountcal
+    t = np.arange(0, 900, 0.02)
+    bank = 20 * np.sin(t / 17) + 12 * np.sin(t / 5.3 + 1)            # degrees, as in gentle turns
+    roll_rate = np.gradient(bank, t)
+    up, ahead = np.array([0.0, 0.0, -1.0]), np.array([0.0, 1.0, 0.0])   # the camera lies on its side, lens level
+    right = np.cross(up, ahead)
+    wanted = 40.0
+    nose = np.cos(np.radians(wanted)) * ahead + np.sin(np.radians(wanted)) * right
+    gyro = np.outer(roll_rate, nose) + np.outer(0.4 * bank, up)         # rolls about the nose, then turns about the vertical
+    imu = np.column_stack([t, np.tile(up, (len(t), 1)), gyro])
+    yaw, correlation = mountcal.nose_from_roll(imu, 0, 900)
+    assert abs(yaw - wanted) < 3 and correlation > 0.9
+    found = mountcal.calibrate(imu, [(100, 200), (500, 560)])
+    assert all(f is not None and abs(f[2] - wanted) < 5 for f in found)
+    assert found[0][:2] == found[1][:2]                                  # the same tilt: the camera was not moved
+    moved = imu.copy()
+    moved[len(t) // 2:, 1:4] = [0.0, 0.6, -0.8]                          # half way, somebody tilts it by 37 degrees
+    assert any(abs(m - 450) < 60 for m in mountcal.moves(mountcal.per_second(moved)))
+
+
+def test_long_glides_become_several_scenes(profile):
+    from core.scenes import split_long
+    scenes = [Scene(id="000_takeoff", type="takeoff", start_s=0, end_s=25, score=1.0),
+              Scene(id="001_glide", type="glide", start_s=25, end_s=4000, score=0.5, attrs={"speed_kmh": 120}),
+              Scene(id="002_glide", type="glide", start_s=4000, end_s=4300, score=0.5),
+              Scene(id="003_landing", type="landing", start_s=4300, end_s=4350, score=1.0)]
+    out = split_long(scenes, 240)
+    glides = [s for s in out if s.type == "glide"]
+    assert len(glides) == 17 + 1 and glides[0].start_s == 25 and glides[16].end_s == 4000     # the short one stays whole
+    assert all(a.end_s == b.start_s for a, b in zip(glides[:17], glides[1:17]))
+    assert len({s.id for s in out}) == len(out) and out[0].id == "000_takeoff" and glides[5].attrs == {"speed_kmh": 120}
+    assert split_long(scenes, 0) == [s.model_copy(update={"id": s.id}) for s in scenes]    # switched off: nothing changes
+
+
+def test_a_found_nose_turns_the_picture(tmp_path):
+    from core import ingest
+    mount = load_mount("motorglider_canopy")
+    rec = Recording("x", "dual_fisheye", [tmp_path / "a.lrv"], [10.0], None, (2880, 1440))
+    plain = rec.source_graph(mount)
+    turned = rec.source_graph(mount, (1.1, -108.5, -54.5))
+    assert "yaw=0:" in plain and "pitch=1.1:roll=-108.5:rorder=rpy" in turned
+    assert f"yaw={(ingest.NOSE_SIGN * -54.5 + ingest.NOSE_OFFSET + 180) % 360 - 180:g}:" in turned
+    assert mount.calibration["dual_fisheye"].auto_nose and not load_mount("glider_panel").calibration["dual_fisheye"].auto_nose

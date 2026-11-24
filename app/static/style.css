@@ -365,8 +365,8 @@ dialog::backdrop { background: var(--shade); }
 .icon.solid { fill: currentColor; stroke: none; width: 12px; height: 12px; }
 
 /* wizard: one length field per chosen film */
-.lengths { display: grid; gap: 8px; max-width: 340px; }
-.length { display: grid; grid-template-columns: 1fr 84px auto; align-items: center; gap: 10px; font-size: 14px; }
+.lengths { display: grid; gap: 8px; max-width: 440px; }
+.length { display: grid; grid-template-columns: 1fr 76px auto 60px 40px; align-items: center; gap: 8px; font-size: 14px; }
 .length input { width: 100%; text-align: right; }
 
 /* wizard: model and reasoning budget of the OpenRouter engine */
@@ -412,3 +412,47 @@ dialog.picker { width: min(920px, calc(100vw - 32px)); max-height: calc(100vh - 
 .readout dd.down { color: var(--bad); }
 .readout .in { color: var(--accent-ink); }
 .readout .in.none { color: var(--faint); }
+.kadry button:disabled { opacity: .3; cursor: not-allowed; }
+.kadry button:disabled:hover { background: none; }
+
+/* wizard: one kind of reel = a switch, then how many and how long */
+.cell.reel { padding: 0; display: flex; flex-direction: column; }
+.cell.reel.on { background: var(--tint); }
+.reel-pick { all: unset; cursor: pointer; display: grid; gap: 6px; padding: 22px 56px 14px 24px; position: relative; flex: 1; }
+.reel-pick:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.reel-pick .about { font-size: 14px; line-height: 1.45; }
+.reel-pick .tick { position: absolute; top: 20px; right: 20px; width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--line); display: grid; place-items: center; color: transparent; }
+.reel-pick[aria-pressed="true"] .tick { background: var(--accent); border-color: var(--accent); color: #fff; }
+.reel-pick .tick .icon { width: 14px; height: 14px; }
+.reel.on .reel-pick .h3 { color: var(--accent-ink); }
+.reel-opts { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 0 24px 20px; font-size: 14px; }
+.stepper-n { display: inline-flex; align-items: center; gap: 8px; }
+.stepper-n .btn { min-width: 32px; min-height: 32px; padding: 0; justify-content: center; }
+.stepper-n b { font-weight: 500; min-width: 64px; text-align: center; }
+.secs { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.secs input { width: 72px; text-align: right; }
+
+/* review: why the AI framed a shot this way; the final bar */
+.shot .why { margin: -4px 0 0; font-size: 12px; line-height: 1.4; color: var(--muted); }
+.shot .why b { color: var(--accent-ink); font-weight: 500; }
+.bar.final { flex-wrap: wrap; row-gap: 10px; }
+
+/* overview: what to do next */
+.next { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px 24px; margin-top: 18px; padding: 16px 18px; border-radius: 10px; background: var(--tint); }
+.next p { margin: 0; font-size: 15px; flex: 1 1 320px; }
+
+/* a job at work looks at work: the active stage shimmers, a dot beats, the last message is shown */
+.steps3 .on::before { background-image: linear-gradient(90deg, var(--accent) var(--p, 30%), var(--raise-2) var(--p, 30%)), linear-gradient(100deg, transparent 35%, rgba(255, 255, 255, .55) 50%, transparent 65%);
+  background-size: 100% 100%, 220% 100%; background-blend-mode: normal; position: relative; }
+.steps3 .on { position: relative; }
+.steps3 .on::after { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 4px; border-radius: 2px;
+  background: linear-gradient(100deg, transparent 40%, rgba(255, 255, 255, .7) 50%, transparent 60%) 0 0 / 220% 100%; animation: sweep 1.6s linear infinite; mix-blend-mode: overlay; }
+@keyframes sweep { from { background-position: 120% 0; } to { background-position: -120% 0; } }
+.alive { display: flex; align-items: center; gap: 8px; margin: 12px 0 0; font-size: 13px; min-width: 0; }
+.alive span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+.alive i { flex: 0 0 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: beat 1.2s ease-in-out infinite; }
+@keyframes beat { 0%, 100% { opacity: .25; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.15); } }
+.working { height: 4px; border-radius: 2px; max-width: 420px; margin: 18px auto 0; background: var(--raise-2); position: relative; overflow: hidden; }
+.working::after { content: ""; position: absolute; inset: 0; width: 35%; border-radius: 2px; background: var(--accent); animation: slide 1.5s ease-in-out infinite; }
+@keyframes slide { from { left: -35%; } to { left: 100%; } }
+@media (prefers-reduced-motion: reduce) { .steps3 .on::after, .alive i, .working::after { animation: none; } .working::after { left: 0; width: 100%; opacity: .5; } }

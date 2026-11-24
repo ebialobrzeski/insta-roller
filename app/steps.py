@@ -61,6 +61,8 @@ def cli_args(step: str, folder: str, options: dict, work: str | None = None) -> 
             args.append(f"--{key}={','.join(options[key])}")
     if options.get("mode", "day") != "day":
         args.append(f"--mode={options['mode']}")
+    if options.get("counts"):
+        args.append("--counts=" + ",".join(f"{name}={int(n)}" for name, n in sorted(options["counts"].items())))
     if options.get("lengths"):
         args.append("--lengths=" + ",".join(f"{name}={seconds:g}" for name, seconds in sorted(options["lengths"].items())))
     if options.get("ai_framing"):

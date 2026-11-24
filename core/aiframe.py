@@ -44,7 +44,7 @@ KEY_ENV = "OPENROUTER_API_KEY"
 BATCH = 30                      # shots per request: a whole reel, so the model sees the film as one
 MIN_VIEW_S = 2.5                # a view in a sequence needs at least this long
 ANSWER_TOKENS = 8000           # room for the answer itself, on top of the reasoning budget
-PROMPT = 5                      # raised when the instructions change, so cached answers are not reused
+PROMPT = 6                      # raised when the instructions change, so cached answers are not reused
 
 
 class Unavailable(RuntimeError):
@@ -462,7 +462,8 @@ def request_body(batch: list[dict], profile: Profile, mount: Mount, title: str, 
         + ("" if showy else
            f"- showpieces (planet or fisheye projection, a roll, ready views marked [accent]): at most {cfg.accents} "
            "shot(s) in the film, where the scene deserves it;\n")
-        + "- give every shot an answer.\n"
+        + "- give every shot an answer;\n"
+        + "- write \"seen\" and \"why\" in Polish, one short plain sentence each: the film's author reads them.\n"
         + (f"{cfg.brief}\n" if cfg.brief else "")
         + ("\nFixed shots you cannot change: " + "; ".join(fixed) + "\n" if fixed else "")
         + ("\nAlready decided earlier in this film: " + "; ".join(so_far) + "\n" if so_far else "")

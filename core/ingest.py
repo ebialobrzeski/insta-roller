@@ -86,7 +86,9 @@ class Recording:
         cal = self.calibration(mount)
         yaw, pitch, roll = (cal.yaw, cal.pitch, cal.roll) if cal else (0.0, 0.0, 0.0)
         if level is not None and not (cal and cal.stabilized):
-            pitch, roll = level
+            pitch, roll = level[0], level[1]
+            if len(level) > 2:                      # the nose was found from the sensors too (core/mountcal.py)
+                yaw = (NOSE_SIGN * level[2] + NOSE_OFFSET + 180) % 360 - 180
         else:
             level = None
         rot = f":yaw={yaw:g}:pitch={pitch:g}:roll={roll:g}"
@@ -105,6 +107,12 @@ class Recording:
         if yaw or pitch or roll:
             return f"[0:v:0]v360=input=e:output=e{rot}{EQ}"
         return f"[0:v:0]null{EQ}"
+
+
+# v360 yaw that brings a nose found by core.mountcal at +x degrees to the middle of the picture.
+# Both numbers were found on a real flight with the camera in two different places.
+NOSE_SIGN = -1.0
+NOSE_OFFSET = 180.0
 
 
 def discover(folder: Path) -> tuple[list[Recording], list[Path]]:

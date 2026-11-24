@@ -7,7 +7,7 @@ design is in `Insta360 X5 – automatyczne kadrowanie i montaż (moduł 1).md`.
 | --- | --- | --- |
 | 1 | One flight, one reel | done, run on real flights |
 | 2 | Themes, several reels, separate shots, safe zone, horizon, exposure | done, run on real flights |
-| 3 | Camera GPS / gyro, automatic sync, flights without IGC, motor glider | done; motor glider untested (no footage) |
+| 3 | Camera GPS / gyro, automatic sync, flights without IGC, motor glider | done; motor glider run on one real flight (Dimona), preset angles still approximate |
 | – | Flight data overlay (speed, altitude, vario) | done |
 | 4 | Media SDK stitcher (`stitcher/`) | done: built with VS 2022 Build Tools, used for rendering by default; slow (about 15 s per second of 5.7K footage) |
 | 5 | Holiday profile | done from sensors and sound; see limits below |
@@ -84,6 +84,12 @@ profile lists the themes; one reel is made per theme with enough material.
   or touchdown scenes and the summary ends on the pilot. `--enable landing`
   turns it on for a job; a recorded landing then ends the summary too.
 - A new theme is one new YAML file plus its name in the profile or `--themes`.
+- `--counts thermal=3,glide_views=2` (or `count:` in a theme, or the field in the
+  wizard) makes several reels of a theme. Each further one takes the scenes the
+  earlier ones left and is named `<theme>_p2`, `_p3`; when the material runs out
+  the rest is left out and `reels.json` says so.
+- Inside a reel the scenes are chosen from the whole recording: one that sits
+  right beside a scene already taken counts for less.
 
 `reels.json` says which reels were planned and why any was left out.
 
@@ -130,6 +136,16 @@ small planet, `fisheye`; one projection per shot).
 `safe_zone` in the profile describes what the TikTok / Instagram interface
 covers. Framing moves each preset's subject to the centre of the free area and
 the overlay stays inside it; `preview` shades the covered parts.
+
+A camera that is not in a fixed place (`auto_nose: true` in the mount's
+calibration, as in `motorglider_canopy`) is calibrated from its own sensors,
+scene by scene (`core/mountcal.py`): the level from gravity, the nose from
+how the aircraft rolls into its turns. A camera moved in flight is handled;
+the nose is found to within some tens of degrees.
+
+`detection.split_long_s` cuts long glides, climbs and thermals into several
+scenes, so a flight without thermals still gives several shots (on in
+`flight_motor`).
 
 `motorglider_canopy` has the presets `instruments`, `left_seat`, `right_seat`
 and `crew`; its `aliases` decide whether "pilot" shots show one seat or both.

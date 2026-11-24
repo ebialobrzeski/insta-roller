@@ -8,8 +8,8 @@ import * as people from "./people.js";
 import * as settings from "./settings.js";
 
 const SCREENS = {przeglad: home, nowy: wizard, filmy: films, osoby: people, ustawienia: settings};
-const NAV = [["przeglad", "home", "Przegląd"], ["nowy", "plus", "Nowy film"], null,
-             ["filmy", "film", "Filmy"], ["osoby", "people", "Osoby"], null, ["ustawienia", "gear", "Ustawienia"]];
+const NAV = [["przeglad", "home", "Przegląd"], ["nowy", "plus", "Nowe rolki"], null,
+             ["filmy", "film", "Moje nagrania"], ["osoby", "people", "Osoby"], null, ["ustawienia", "gear", "Ustawienia"]];
 
 // --- the shell --------------------------------------------------------------------------
 $("#brand").prepend(mark());
@@ -19,8 +19,8 @@ $("#nav").replaceChildren(...NAV.map(item => item === null ? h("hr") :
 $("#theme").replaceWith(themeSwitch());
 $("#collapse").append(icon("left"), h("span", {}, "Zwiń"));
 $("#menu").append(icon("menu"));
-$("#top-films").append(icon("film"), h("span", {class: "long"}, "Filmy"));
-$("#top-new").append(icon("plus"), h("span", {}, "Nowy film"));
+$("#top-films").remove();                       // the menu already has it
+$("#top-new").append(icon("plus"), h("span", {}, "Nowe rolki"));
 
 const app = $("#app");
 app.classList.toggle("narrow", store.get("narrow", false));
@@ -37,17 +37,18 @@ watch(jobs => {
   now.classList.toggle("busy", !!running);
   now.href = running ? `#filmy/${running.id}` : "#filmy";
   $("#now-text").textContent = running ? stateText(running) : waiting ? "Zaraz zaczynam…" : "Bezczynna";
-  now.title = running ? `${running.name}: ${stateText(running)}` : "Aplikacja nic teraz nie robi";
+  now.title = running ? `${running.label}: ${stateText(running)}` : "Aplikacja nic teraz nie robi";
   const active = jobs.filter(j => j.status === "running" || j.status === "queued").length;
   $("#nav-count").hidden = !active;
   $("#nav-count").textContent = active;
 
   const review = jobs.find(j => j.status === "review"), failed = jobs.find(j => j.status === "error");
   const [href, glyph, head, text] =
-    review ? [`#filmy/${review.id}/ujecia`, "eye", "Ujęcia czekają", `Przejrzyj je i uruchom render: ${review.name}`]
-    : failed ? [`#filmy/${failed.id}`, "alert", "Film się nie udał", `Zobacz, co poszło nie tak: ${failed.name}`]
-    : jobs.length ? ["#nowy", "info", "Działa w tle", inWindow ? "Film powstaje dalej, gdy schowasz okno do ikony przy zegarze." : "Możesz zamknąć kartę. Film znajdziesz w „Filmy”."]
-    : ["#nowy", "film", "Zacznij tutaj", "Wskaż folder z nagraniami, a powstanie pierwszy film."];
+    review ? [`#filmy/${review.id}/ujecia`, "eye", "Czeka na Ciebie", `Sprawdź ujęcia i zrób rolki: ${review.label}`]
+    : failed ? [`#filmy/${failed.id}`, "alert", "Coś się nie udało", `Zobacz, co poszło nie tak: ${failed.label}`]
+    : running ? [`#filmy/${running.id}`, "info", "Pracuję w tle", inWindow ? "Możesz schować okno do ikony przy zegarze. Dam znać tutaj, gdy będzie na co popatrzeć." : "Możesz zamknąć kartę. Rolki znajdziesz w „Moje nagrania”."]
+    : jobs.length ? ["#nowy", "plus", "Nowe rolki", "Wskaż kolejne nagrania albo zrób inne rolki z tych, które już są."]
+    : ["#nowy", "film", "Zacznij tutaj", "Wskaż folder z nagraniami, a aplikacja wybierze najlepsze momenty."];
   const notice = $("#notice"), key = href + head + text;
   if (notice.dataset.key !== key) {              // only when it changes: no flicker while polling
     notice.dataset.key = key;

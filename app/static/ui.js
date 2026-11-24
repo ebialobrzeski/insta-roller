@@ -128,6 +128,7 @@ export const fileUrl = (job, path, download) =>
 // Reel themes: what each film is, in a line.
 export const THEMES = {
   takeoff_tow: ["Start i hol", "Rozbieg, wznoszenie za samolotem i wyczepienie."],
+  trip: ["Cały wyjazd", "Jeden film ze wszystkich dni."],
   thermal: ["Komin", "Krążenie w noszeniu: skrzydło, ziemia pod spodem, pilot."],
   glide_views: ["Przelot i widoki", "Lot po prostej między kominami, horyzont i krajobraz."],
   flight_summary: ["Skrót lotu", "Cały lot w jednym filmie, po kawałku z każdej części."],
@@ -167,28 +168,43 @@ const PRESETS = {front: "przód", front_level: "przód, równy horyzont", pilot:
 export const presetName = id => PRESETS[id] || (/^ai\d+[a-z]$/.test(id) ? "kadr AI" : id);
 
 // A job's state in words. `short` is for the sidebar.
-const PHASES = ["Szukam scen", "Układam plan", "Renderuję"];
+const PHASES = ["Szukam najlepszych momentów", "Układam rolki", "Robię rolki"];
 export function stateText(job) {
   if (job.status === "queued") return "Czeka w kolejce";
-  if (job.status === "review") return "Czeka na przejrzenie ujęć";
+  if (job.status === "review") return "Czeka na Ciebie: sprawdź ujęcia";
   if (job.status === "done") return "Gotowe";
   if (job.status === "error") return "Nie udało się";
   if (job.status === "cancelled") return "Zatrzymane";
   if (job.cancel) return "Zatrzymuję…";
-  if (job.stage === "thumbnails") return job.detail ? `Robię miniatury: ${job.detail.shot} z ${job.detail.of}` : "Robię miniatury…";
+  if (job.stage === "analyze" && job.detail) return `Przeglądam nagrania: ${job.detail.shot} z ${job.detail.of}`;
+  if (job.stage === "thumbnails") return job.detail ? `Przygotowuję podgląd: ${job.detail.shot} z ${job.detail.of}` : "Przygotowuję podgląd…";
   if (job.stage === "shots") return job.detail ? `Zapisuję ujęcie ${job.detail.shot} z ${job.detail.of}` : "Zapisuję osobne ujęcia…";
-  if (job.stage === "render") return job.detail ? `Renderuję ujęcie ${job.detail.shot} z ${job.detail.of}` : "Renderuję…";
+  if (job.stage === "render") return job.detail ? `Robię rolki: ujęcie ${job.detail.shot} z ${job.detail.of}` : "Robię rolki…";
   return `${PHASES[job.phase] || "Pracuję"}…`;
 }
 
 // What went wrong, as a sentence and a next step; the raw text stays under "Szczegóły techniczne".
+// Why a reel was not made, in a sentence. The plan step says it in English for the log.
+export function skipText(reason = "") {
+  const short = /not enough material \((\d+)s(?: of (\d+)s needed)?\)/.exec(reason);
+  if (short) return short[2] ? `za mało materiału: jest ${short[1]} s pasujących momentów, potrzeba ${short[2]} s.` : `za mało materiału (${short[1]} s).`;
+  if (/switched off/.test(reason)) return "ten rodzaj rolki jest wyłączony.";
+  if (/no scene fits/.test(reason)) return "żaden moment nie mieści się w tej długości. Wydłuż rolkę.";
+  if (/no usable material/.test(reason)) return "nie ma pasujących momentów.";
+  return reason || "bez podanego powodu.";
+}
+
 export function problemText(job) {
   const raw = job.error || "", stage = raw.split(":")[0];
-  const what = {analyze: "Nie udało się znaleźć scen w nagraniach.", plan: "Nie udało się ułożyć planu filmu.",
-                render: "Nie udało się wyrenderować filmu.", shots: "Nie udało się zapisać osobnych ujęć."}[stage] || "Coś poszło nie tak.";
+  const what = {analyze: "Nie udało się znaleźć dobrych momentów w nagraniach.", plan: "Nie udało się ułożyć rolek.",
+                thumbnails: "Nie udało się przygotować podglądu ujęć.",
+                render: "Nie udało się zrobić rolek.", shots: "Nie udało się zapisać osobnych ujęć."}[stage] || "Coś poszło nie tak.";
   const hints = [
     [/No camera files/i, "W tym folderze nie ma nagrań z kamery (.insv, .lrv) ani gotowych plików .mp4. Sprawdź, czy wybrany jest właściwy folder."],
-    [/No reel could be planned/i, "W nagraniu nie ma scen pasujących do wybranych tematów. Wybierz inne tematy albo „Skrót lotu”."],
+    [/No reel could be planned/i, "W nagraniu nie ma momentów pasujących do wybranych rolek. Wybierz inne rodzaje rolek albo „Skrót lotu”."],
+    [/mixes projections/i, "W jednym ujęciu są kadry o różnych projekcjach (zwykła, planeta, rybie oko). Otwórz ujęcia i zmień jeden z kadrów."],
+    [/OPENROUTER_API_KEY|OpenRouter/i, "Nie udało się połączyć z AI (OpenRouter). Sprawdź klucz w Ustawieniach albo wybierz stałe kadry."],
+    [/CUDA|out of memory|nvenc/i, "Karta graficzna odmówiła pracy (zwykle brak pamięci). Zamknij inne programy korzystające z karty i spróbuj ponownie."],
     [/needs the stitcher/i, "Najlepsza jakość wymaga programu do sklejania Media SDK, którego tu nie ma. Wybierz jakość „Dobra”."],
     [/no creation time|--video-start/i, "Nagranie nie ma zapisanej godziny, więc nie da się go dopasować do zapisu lotu."],
     [/No IGC file, no GPS/i, "Nie ma zapisu lotu (IGC) ani danych z kamery, po których dałoby się znaleźć sceny."],
@@ -196,6 +212,38 @@ export function problemText(job) {
     [/No space left|not enough space|disk full/i, "Na dysku zabrakło miejsca. Zwolnij miejsce albo zmień folder pamięci podręcznej w ustawieniach."],
   ];
   const hint = (hints.find(([pattern]) => pattern.test(raw + (job.log || ""))) || [])[1]
-    || "Spróbuj ponownie. Jeśli błąd wraca, szczegóły techniczne poniżej pokażą, co dokładnie się stało.";
+    || "Spróbuj ponownie. Jeśli błąd wraca, pod „Więcej” → „Szczegóły techniczne” jest dokładny komunikat.";
   return [what, hint];
+}
+
+// The flow of making reels: 1 Nagrania, 2 Rolki, 3 Ujęcia. `back(n)` opens an earlier step (the wizard's own).
+export function flowSteps(current, back) {
+  return h("div", {class: "row"}, h("ol", {class: "stepper", "aria-label": "Kroki"}, ["Nagrania", "Rolki", "Ujęcia"].map((name, i) => {
+    const n = i + 1, open = n < current && back;
+    return h("li", {"aria-current": n === current ? "step" : null, class: n < current ? "done" : null},
+      open ? h("button", {type: "button", onclick: () => back(n)}, name) : h("span", {}, name));
+  })));
+}
+
+// A sign of life while a job runs: the last thing the work said, in plain words where we know them.
+const SAID = [
+  [/^analyze: reading the camera/, "Czytam dane z czujników kamery"],
+  [/^analyze: matching the video/, "Dopasowuję nagranie do zapisu lotu"],
+  [/^analyze: finding the phases/, "Szukam faz lotu: startu, kominów, przelotów"],
+  [/^analyze: camera position found/, "Ustaliłem, jak była ustawiona kamera"],
+  [/^analyze: (\d+) scenes/, m => `Znalazłem ${m[1]} momentów`],
+  [/^people: looking for/, "Szukam znajomych twarzy w nagraniach"],
+  [/^ai framing: downloading/, "Pobieram model AI (jednorazowo)"],
+  [/shot (\d+)\/(\d+)\s+clip (\S+)/, m => `Nagranie ${m[1]} z ${m[2]}: ${m[3]}`],
+  [/shot (\d+)\/(\d+)\s+faces/, m => `Twarze: moment ${m[1]} z ${m[2]}`],
+  [/shot (\d+)\/(\d+)\s+still/, m => `Podgląd ${m[1]} z ${m[2]}`],
+  [/shot (\d+)\/(\d+)/, m => `Ujęcie ${m[1]} z ${m[2]}`],
+  [/^plan: (\S+): (\d+) shots/, m => `Ułożyłem rolkę (${m[2]} ujęć)`],
+  [/^render: (\S+): (\d+) shots/, m => `Zaczynam rolkę z ${m[2]} ujęć`],
+  [/^render: done/, "Rolka gotowa"],
+];
+export function lastSaid(job) {
+  const line = (job.log || "").split("\n").map(l => l.trim()).filter(l => l && !l.startsWith("$")).pop() || "";
+  for (const [pattern, text] of SAID) { const m = pattern.exec(line); if (m) return typeof text === "function" ? text(m) : text; }
+  return line.length > 90 ? `${line.slice(0, 90)}…` : line;
 }

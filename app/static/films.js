@@ -1,9 +1,10 @@
-// Filmy: every film project, what is happening to it, and its finished films.
-import {h, api, icon, guard, toast, size, date, duration, stateText, problemText, fileUrl, inWindow, reveal, saveButton} from "./ui.js";
+// Moje nagrania: every folder of recordings, what is happening to it, and the reels made from it.
+// The reels are what a person comes for, so they are on top; everything else is under "Więcej".
+import {h, api, icon, guard, toast, size, date, duration, plural, stateText, problemText, skipText, lastSaid, fileUrl, inWindow, reveal, saveButton} from "./ui.js";
 import {live, watch, refresh, setContext} from "./live.js";
 import * as review from "./review.js";
 
-const PARTS = ["Szukanie scen", "Plan", "Render"];
+const PARTS = ["Szukam najlepszych momentów", "Układam rolki", "Robię rolki"];
 const act = (job, path, body) => guard(async () => { await api(`/api/jobs/${job.id}/${path}`, "POST", body); await refresh(); });
 
 function progress(job) {
@@ -15,7 +16,7 @@ function progress(job) {
                                      style: i === job.phase ? `--p:${Math.round(Math.max(shot, .06) * 100)}%` : null}, name)));
 }
 
-// The part of a card that changes while the job runs.
+// The part of a card that changes while the work goes on: the name, the state, the one thing to do next.
 function head(job) {
   const busy = job.status === "running" || job.status === "queued";
   const [what, hint] = job.status === "error" ? problemText(job) : [];
@@ -23,86 +24,102 @@ function head(job) {
   return h("div", {class: "job-head"},
     h("div", {class: "head"},
       h("div", {style: "min-width:0"},
-        h("h2", {class: "title"}, job.name, job.status === "running" && h("span", {class: "live"}, "[ W TOKU ]")),
-        h("p", {class: "sub mono", style: "overflow-wrap:anywhere"}, job.folder)),
+        h("h2", {class: "title"}, job.label, job.status === "running" && h("span", {class: "live"}, "[ W TOKU ]")),
+        h("p", {class: "sub mono", style: "overflow-wrap:anywhere;font-size:12px"}, job.folder)),
       h("div", {class: "state", style: "justify-content:flex-end;text-align:right"},
         h("span", {class: tag}, stateText(job)),
         h("span", {class: "mono muted"}, busy ? duration(job.elapsed_s) : date(job.updated)))),
     progress(job),
+    job.status === "running" && h("p", {class: "alive"}, h("i", {"aria-hidden": "true"}), h("span", {}, lastSaid(job) || "Pracuję…"),
+      h("span", {class: "muted"}, ` · trwa ${duration(job.elapsed_s)}`)),
+    job.status === "queued" && h("p", {class: "alive idle"}, h("span", {class: "muted"}, "Czeka, aż skończy się poprzednia praca.")),
     what && h("div", {class: "problem"}, h("b", {}, what), hint),
-    h("div", {class: "inline mt"},
+    (busy || job.status === "error" || job.status === "cancelled" || job.status === "review") && h("div", {class: "inline mt"},
       busy && h("button", {class: "btn", type: "button", onclick: act(job, "cancel")}, "Zatrzymaj"),
       (job.status === "error" || job.status === "cancelled") && h("button", {class: "btn primary", type: "button", onclick: act(job, "retry")}, "Spróbuj ponownie"),
-      job.status === "review" && h("a", {class: "btn primary", href: `#filmy/${job.id}/ujecia`}, icon("eye"), "Przejrzyj ujęcia"),
-      job.status === "review" && h("span", {class: "muted", style: "font-size:13px"}, "Ujęcia są wybrane. Zobacz je, popraw i uruchom render.")));
+      job.status === "review" && h("a", {class: "btn primary big", href: `#filmy/${job.id}/ujecia`}, icon("eye"), "Sprawdź ujęcia i zrób rolki"),
+      job.status === "review" && h("span", {class: "muted", style: "font-size:13px"}, "Najlepsze momenty są wybrane. Zobacz je, popraw, co chcesz, i uruchom robienie rolek.")));
 }
 
-// The part that changes only when files appear: films, shots, the technical details.
+// The part that changes only when files appear: the reels, then everything else under "Więcej".
 function body(job, r) {
   const length = h("input", {type: "number", min: 5, step: 1, placeholder: "sekundy", style: "max-width:120px", "aria-label": "Długość nowej wersji w sekundach"});
   const idle = job.status !== "running" && job.status !== "queued";
-  const film = f => h("div", {class: "film"},
+  const reel = f => h("div", {class: "film"},
     h("video", {controls: true, preload: "metadata", playsinline: true, src: fileUrl(job.id, f.name)}),
     h("div", {}, h("div", {class: "name"}, f.title), h("div", {class: "tags", style: "margin-top:6px"},
       f.length_s && h("span", {class: "tag"}, `${f.length_s} s`), h("span", {class: "tag plain"}, size(f.size)), h("span", {class: "tag plain"}, date(f.mtime)))),
     saveButton(fileUrl(job.id, f.name, true), f.path));
   const wide = job.kind === "holiday" ? "films wide" : "films";
-  // Films of the present plan are shown; other lengths, and everything while a new run is not finished, are "earlier".
-  const fresh = job.status === "done" ? r.films.filter(f => f.current) : [];
-  const now = job.status !== "done" ? [] : fresh.length ? fresh : r.films, old = r.films.filter(f => !now.includes(f));
+  // The reels of the present plan come first. While a new run is going, the ones made before stay in view.
+  const fresh = r.films.filter(f => f.current);
+  const now = fresh.length ? fresh : r.films, old = r.films.filter(f => !now.includes(f));
+  const waiting = job.status !== "done" && now.length > 0;
   return h("div", {class: "job-body"},
-    now.length ? h("div", {class: wide}, now.map(film)) : null,
-    old.length ? h("details", {class: "mt"}, h("summary", {}, `Wcześniejsze filmy z tego folderu (${old.length})`), h("div", {class: wide}, old.map(film))) : null,
-    r.shots.length ? h("div", {class: "inline mt2"}, r.shots.map(s => inWindow
-      ? h("button", {class: "btn small", type: "button", onclick: () => reveal(s.path)}, icon("folder"), `Pokaż ujęcia w Eksploratorze: ${s.title}${s.length_s ? `, ${s.length_s} s` : ""}`) :
-      h("a", {class: "btn small", href: `/api/jobs/${job.id}/zip/${encodeURIComponent(s.folder)}`}, icon("down"), `Pobierz ujęcia (zip): ${s.title}${s.length_s ? `, ${s.length_s} s` : ""}`))) : null,
+    now.length ? h("div", {class: "mt2"},
+      h("div", {class: "h3"}, waiting ? `Rolki zrobione wcześniej (${now.length})` : plural(now.length, "rolka", "rolki", "rolek")),
+      h("div", {class: wide, style: "margin-top:12px"}, now.map(reel)))
+      : idle && job.status === "done" ? h("p", {class: "muted mt2"}, "Nie powstała żadna rolka. Powody są pod „Więcej”.") : null,
     idle && r.scenes ? h("div", {class: "inline mt2"},
-      job.status === "done" && h("a", {class: "btn", href: `#filmy/${job.id}/ujecia`}, icon("eye"), "Popraw ujęcia"),
-      h("details", {style: "flex:1 1 280px"}, h("summary", {}, "Nowa wersja o innej długości"),
+      job.status !== "review" && h("a", {class: "btn", href: `#filmy/${job.id}/ujecia`}, icon("eye"), "Popraw ujęcia"),
+      h("a", {class: "btn", href: `#nowy/z/${job.id}`}, icon("plus"), "Zrób inne rolki z tego nagrania")) : null,
+    h("details", {class: "mt2"}, h("summary", {}, "Więcej"),
+      old.length ? h("div", {class: "mt"}, h("div", {class: "h3"}, `Starsze wersje (${old.length})`),
+        h("div", {class: wide, style: "margin-top:12px"}, old.map(reel))) : null,
+      r.shots.length ? h("div", {class: "mt2"}, h("div", {class: "h3"}, "Osobne ujęcia, do własnego montażu"),
+        h("div", {class: "inline", style: "margin-top:8px"}, r.shots.map(s => inWindow
+          ? h("button", {class: "btn small", type: "button", onclick: () => reveal(s.path)}, icon("folder"), `${s.title}${s.length_s ? `, ${s.length_s} s` : ""}`)
+          : h("a", {class: "btn small", href: `/api/jobs/${job.id}/zip/${encodeURIComponent(s.folder)}`}, icon("down"), `${s.title}${s.length_s ? `, ${s.length_s} s` : ""} (zip)`)))) : null,
+      idle && r.scenes ? h("div", {class: "mt2"}, h("div", {class: "h3"}, "Te same rolki w innej długości"),
         h("div", {class: "inline", style: "margin-top:8px"}, length,
           h("button", {class: "btn", type: "button", onclick: guard(async () => {
-            if (!+length.value) throw new Error("Podaj długość nowej wersji w sekundach");
+            if (!+length.value) throw new Error("Podaj długość w sekundach");
             await api(`/api/jobs/${job.id}/version`, "POST", {length: +length.value});
-            toast("Robię nową wersję. Sceny są już znalezione, więc pójdzie szybciej.");
+            toast("Robię nową wersję. Momenty są już znalezione, więc pójdzie szybciej.");
             await refresh();
           })}, "Zrób"),
-          h("span", {class: "muted", style: "font-size:13px"}, "Te same sceny, inna długość. Bez ponownego szukania scen.")))) : null,
-    h("details", {class: "mt"}, h("summary", {}, "Szczegóły techniczne"),
-      h("dl", {class: "kv", style: "margin-top:8px"}, h("dt", {}, "Filmy są w"), h("dd", {class: "mono"}, job.out)),
-      inWindow && h("button", {class: "btn small", type: "button", style: "margin-top:8px", onclick: () => reveal(job.out)}, icon("folder"), "Otwórz folder z filmami"),
-      r.skipped.length ? h("p", {class: "muted", style: "font-size:13px;margin-top:8px"}, "Bez filmu: ", r.skipped.map(s => `${s.tag} (${s.reason})`).join("; ")) : null,
-      r.report && h("p", {style: "margin-top:8px"}, h("a", {href: fileUrl(job.id, "scenes_report.txt"), target: "_blank"}, "Lista znalezionych scen")),
-      job.error && h("pre", {}, job.error),
-      h("pre", {class: "log"}, job.log || "(brak zapisu)"),
-      h("pre", {}, job.commands.join("\n")),
-      idle && h("div", {class: "inline mt"},
+          h("span", {class: "muted", style: "font-size:13px"}, "Te same momenty, inna długość każdej rolki."))) : null,
+      r.skipped.length ? h("div", {class: "mt2"}, h("div", {class: "h3"}, "Rolki, które nie powstały"),
+        h("ul", {class: "facts"}, r.skipped.map(s => h("li", {}, h("b", {}, `${s.title || s.theme || s.tag}: `), skipText(s.reason))))) : null,
+      h("div", {class: "mt2"}, h("div", {class: "h3"}, "Gdzie są pliki"),
+        h("p", {class: "mono", style: "font-size:13px;margin-top:6px;overflow-wrap:anywhere"}, job.out),
+        inWindow && h("button", {class: "btn small", type: "button", style: "margin-top:8px", onclick: () => reveal(job.out)}, icon("folder"), "Otwórz folder z rolkami")),
+      h("details", {class: "mt2"}, h("summary", {}, "Szczegóły techniczne (dla ciekawych i do zgłaszania błędów)"),
+        r.report && h("p", {style: "margin-top:8px"}, h("a", {href: fileUrl(job.id, "scenes_report.txt"), target: "_blank"}, "Lista znalezionych momentów (plik tekstowy)")),
+        job.error && h("div", {class: "muted", style: "font-size:13px;margin-top:10px"}, "Komunikat błędu"),
+        job.error && h("pre", {}, job.error),
+        h("div", {class: "muted", style: "font-size:13px;margin-top:10px"}, "Zapis pracy"),
+        h("pre", {class: "log"}, job.log || "(brak zapisu)"),
+        h("div", {class: "muted", style: "font-size:13px;margin-top:10px"}, "Polecenia"),
+        h("pre", {}, job.commands.join("\n"))),
+      idle && h("div", {class: "inline mt2"},
         h("button", {class: "btn small danger", type: "button", onclick: guard(async () => {
-          if (!confirm(`Usunąć „${job.name}” z listy? Nagrania i gotowe filmy zostaną na dysku.`)) return;
+          if (!confirm(`Usunąć „${job.label}” z listy? Nagrania i gotowe rolki zostaną na dysku.`)) return;
           await api(`/api/jobs/${job.id}`, "DELETE");
           await refresh();
         })}, "Usuń z listy"),
-        h("span", {class: "muted", style: "font-size:13px"}, "Znika tylko wpis na tej liście. Pliki zostają."))));
+        h("span", {class: "muted", style: "font-size:13px"}, "Znika tylko wpis na tej liście. Nagrania i rolki zostają na dysku."))));
 }
 
-const headKey = j => JSON.stringify([j.status, j.stage, j.detail, Math.round(j.progress * 100), j.cancel, j.error, Math.floor(j.elapsed_s / 5)]);
+const headKey = j => JSON.stringify([j.status, j.stage, j.detail, Math.round(j.progress * 100), j.cancel, j.error, j.label, j.status === "running" ? [Math.floor(j.elapsed_s), lastSaid(j)] : 0]);
 const bodyKey = j => JSON.stringify([j.status, j.step_index, j.queued]);
 
 export async function show(view, [id, sub]) {
   if (id && sub === "ujecia") return review.show(view, +id);
-  setContext("Filmy");
+  setContext("Moje nagrania");
   const cards = new Map();                       // job id -> {cell, head, body, keys}
 
   async function sync(jobs) {
     if (!jobs.length) {
       cards.clear();
       view.replaceChildren(h("div", {class: "row"}, h("div", {class: "cell empty"}, icon("film", "icon glyph"),
-        h("h1", {class: "title"}, "Tu będą Twoje filmy"),
-        h("p", {}, "Każdy folder z nagraniami to jeden projekt. Zobaczysz tu postęp pracy, a potem gotowe filmy do obejrzenia i pobrania."),
-        h("a", {class: "btn primary big", href: "#nowy"}, icon("plus"), "Zrób pierwszy film"))));
+        h("h1", {class: "title"}, "Tu będą Twoje nagrania i rolki"),
+        h("p", {}, "Każdy lot albo wyjazd to jeden folder z nagraniami. Zobaczysz tu, co aplikacja z nim robi, a potem gotowe rolki do obejrzenia i zapisania."),
+        h("a", {class: "btn primary big", href: "#nowy"}, icon("plus"), "Zrób pierwsze rolki"))));
       return;
     }
-    if (!cards.size) view.replaceChildren(h("div", {class: "row"}, h("div", {class: "cell"}, h("h1", {class: "title"}, "Filmy"),
-      h("p", {class: "sub"}, "Jeden projekt na folder z nagraniami. Najnowsze na górze."))), h("div", {class: "gap"}));
+    if (!cards.size) view.replaceChildren(h("div", {class: "row"}, h("div", {class: "cell"}, h("h1", {class: "title"}, "Moje nagrania"),
+      h("p", {class: "sub"}, "Każdy lot albo wyjazd osobno, z rolkami, które z niego powstały. Najnowsze na górze."))), h("div", {class: "gap"}));
     for (const job of jobs) {
       let card = cards.get(job.id);
       if (!card) {

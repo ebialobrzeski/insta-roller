@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from core.reel import base_theme
 from core.config import PROFILES_DIR, Mount, Profile, Theme, list_names, load_mount, load_profile
 
 from . import people as people_page
@@ -58,6 +59,7 @@ class JobOptions(BaseModel):
     mount: str = ""
     length: float | None = Field(None, gt=0)
     lengths: dict[str, float] = {}          # theme -> seconds, for the reels whose length was changed
+    counts: dict[str, int] = {}             # theme -> how many reels of it (each from other scenes)
     enable: list[str] = []                  # themes switched on for this job, e.g. landing
     disable: list[str] = []
     mode: Literal["day", "trip", "both"] = "day"
@@ -84,6 +86,10 @@ class Settings(BaseModel):
     work: str = ""                          # local cache folder (--work); empty = <output folder>/.cache
     quality: Literal["auto", "best", "good", "fast"] = "auto"   # what the "Nowy film" form starts with
     people_names: list[str] = []            # names exported from Immich; empty = the holiday profile's people
+    # Who frames the shots, unless a job says otherwise: "" = as the profile says (fixed framings).
+    ai_framing: Literal["", "off", "local", "openrouter"] = ""
+    ai_model: str = Field("", max_length=120, pattern=r"^[\w.:/@-]*$")
+    ai_reasoning: int = Field(0, ge=0, le=200_000)
 
 
 class Text(BaseModel):
@@ -97,6 +103,14 @@ class Compose(BaseModel):
 
 class Version(BaseModel):
     length: float = Field(gt=0)
+
+
+class RenderAsk(BaseModel):
+    quality: Literal["best", "good", "fast"] | None = None      # None = as the job was started
+
+
+class ResetAsk(BaseModel):
+    tags: list[str] = Field(max_length=64)                      # reels to plan again, automatically
 
 
 class PreviewAsk(BaseModel):
@@ -248,6 +262,38 @@ def day_text(day: str) -> str:
     return f"{day[6:8]}.{day[4:6]}.{day[:4]}" if len(day) == 8 and day.isdigit() else day
 
 
+MONTHS = ["stycznia", "lutego", "marca", "kwietnia", "maja", "czerwca", "lipca", "sierpnia", "września",
+          "października", "listopada", "grudnia"]
+
+
+def day_words(day: str) -> str:
+    """20260623 -> 23 czerwca 2026"""
+    if len(day) != 8 or not day.isdigit() or not 1 <= int(day[4:6]) <= 12:
+        return day
+    return f"{int(day[6:8])} {MONTHS[int(day[4:6]) - 1]} {day[:4]}"
+
+
+def recording_label(kind: str, folder: str, scenes: dict | None) -> str:
+    """What a folder of recordings is called in the app: "Lot 23 czerwca 2026", "Wyjazd 2–19 sierpnia 2025".
+    The dates come from the recordings; a date in the folder name is the fallback."""
+    days = sorted({r.get("day", "") for r in (scenes or {}).get("recordings", []) if r.get("day")})
+    start = ((scenes or {}).get("recording") or {}).get("start_utc")
+    if not days and start:
+        days = [time.strftime("%Y%m%d", time.localtime(start))]
+    if not days:
+        found = re.search(r"(20\d{2})[-_.]?(\d{2})[-_.]?(\d{2})", Path(folder).name)
+        days = ["".join(found.groups())] if found else []
+    word = "Wyjazd" if kind == "holiday" else "Lot"
+    if not days or not days[0].isdigit():
+        return f"{word}: {Path(folder).name or folder}"
+    first, last = days[0], days[-1]
+    if first == last:
+        return f"{word} {day_words(first)}"
+    if first[:6] == last[:6]:
+        return f"{word} {int(first[6:8])}–{day_words(last)}"
+    return f"{word} {day_words(first)} – {day_words(last)}"
+
+
 class FreshFiles(StaticFiles):
     """The UI's files, checked for changes on every load: an updated app never runs with old JS."""
 
@@ -309,6 +355,20 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
             kinds[key] = "holiday" if profile.kind == "holiday" else "flight"
         return kinds[key]
 
+    labels: dict = {}
+
+    def label_of(job: dict) -> str:
+        """Read once per state of the analysis: polling must not read scenes.json every second."""
+        scenes_path = out_dir(job) / "scenes.json"
+        try:
+            stamp = scenes_path.stat().st_mtime
+        except OSError:
+            stamp = 0
+        key = (job["id"], stamp)
+        if key not in labels:
+            labels[key] = recording_label(kind_of(job), job["folder"], read_json(scenes_path) if stamp else None)
+        return labels[key]
+
     def view(job: dict, log_lines: int | None = None) -> dict:
         job = dict(job)
         step = job["log"].rpartition("$ ")[2]           # the output of the step that runs now
@@ -318,6 +378,7 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
             job["log"] = "\n".join(job["log"].splitlines()[-log_lines:])
         work = job_work(settings()["work"], job["id"])
         job["name"], job["kind"] = Path(job["folder"]).name or job["folder"], kind_of(job)
+        job["label"] = label_of(job)
         job["phase"] = PHASE.get(job["stage"], 3 if job["status"] in ("done", "review") else 0)
         job["quality"] = {v: k for k, v in QUALITY.items()}.get(job["options"].get("source"), "auto")
         job["elapsed_s"] = round((time.time() if job["status"] == "running" else job["updated"]) - job["queued"])
@@ -455,6 +516,7 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
             people += [n for n in p.get("people", []) if n not in people]
         return {"profiles": found, "people": [n for n in people if n], "stitcher": stitcher() is not None,
                 "quality": settings()["quality"],
+                "ai": {k: settings()[k] for k in ("ai_framing", "ai_model", "ai_reasoning")},
                 "mounts": each("mounts", lambda m: {"presets": list(m.presets)}),
                 "themes": each("themes", lambda t: {"title": t.title, "enabled": t.enabled,
                                                     "length": t.target_length_s})}
@@ -489,6 +551,13 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
         if options["source"] == "sdk" and stitcher() is None:
             raise HTTPException(422, "Najlepsza jakość wymaga programu do sklejania Media SDK, a nie ma go na tym komputerze")
         options["shots"] = options["shots"] or not options["films"]
+        chosen = settings()                         # what the settings say, where the form said nothing
+        if options["ai_framing"] is None and chosen["ai_framing"]:
+            options["ai_framing"] = chosen["ai_framing"]
+        if not options["ai_model"] and chosen["ai_model"]:
+            options["ai_model"] = chosen["ai_model"]
+        if options["ai_reasoning"] is None and chosen["ai_reasoning"]:
+            options["ai_reasoning"] = chosen["ai_reasoning"]
         current = queue.find(str(folder))
         if options["out"].strip():
             out = absolute(options["out"])
@@ -565,9 +634,30 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
         return rerender(job_id, length=body.length)
 
     @app.post("/api/jobs/{job_id}/render")
-    def render(job_id: int):
-        """"Renderuj" after the scene review: plan (keeps the edited reel plans) + render."""
-        return rerender(job_id)
+    def render(job_id: int, body: RenderAsk | None = None):
+        """"Zrób rolki" after the scene review: plan (keeps the edited reel plans) + render."""
+        changed = {}
+        if body and body.quality:
+            if body.quality == "best" and stitcher() is None:
+                raise HTTPException(422, "Najlepsza jakość wymaga programu do sklejania Media SDK, a nie ma go na tym komputerze")
+            changed["source"] = QUALITY[body.quality]
+        return rerender(job_id, **changed, review=False)
+
+    @app.post("/api/jobs/{job_id}/review/reset")
+    def review_reset(job_id: int, body: ResetAsk):
+        """"Przywróć automatyczne": the named reels lose their hand edits and are planned again."""
+        job = need(job_id)
+        out = out_dir(job)
+        for tag in body.tags:
+            if not NAME.fullmatch(tag):
+                raise HTTPException(422, "Zła nazwa rolki")
+            path = out / f"reel_plan_{tag}.json"
+            plan = read_json(path)
+            if plan is None:
+                raise HTTPException(404, f"Nie ma rolki '{tag}'")
+            plan["edited"] = False
+            path.write_text(json.dumps(plan, indent=2, ensure_ascii=False), "utf-8")
+        return change(job_id, lambda: queue.restart(job_id, ["plan", "thumbnails"], "review", job["options"]))
 
     # --- UI: results ------------------------------------------------------
     def films_in(out: Path) -> tuple[list[dict], object]:
@@ -583,6 +673,11 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
         def named(tag: str) -> dict:
             match = TAG.fullmatch(tag)
             theme = match[1] if match else tag
+            base, number = base_theme(theme)        # thermal_p2: the second reel of "thermal"
+            if base in titles:
+                done = {"tag": tag, "theme": theme, "title": titles[base] + (f" {number}" if number > 1 else ""),
+                        "length_s": int(match[2]) if match else None}
+                return done
             title = (titles.get(theme) or (f"Dzień {day_text(theme[4:])}" if theme.startswith("day_") else
                                            "Cały wyjazd" if theme == "trip" else theme))
             return {"tag": tag, "theme": theme, "title": title, "length_s": int(match[2]) if match else None}
@@ -601,7 +696,7 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
         found = []
         for job in queue.list():
             try:
-                found += [{**film, "job": job["id"], "job_name": Path(job["folder"]).name} for film in films_in(out_dir(job))[0]]
+                found += [{**film, "job": job["id"], "job_name": Path(job["folder"]).name, "job_label": label_of(job)} for film in films_in(out_dir(job))[0]]
             except OSError:                             # a share that is not connected now
                 pass
         return sorted(found, key=lambda f: -f["mtime"])
@@ -651,6 +746,13 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
         show()
         return {"ok": True}
 
+    def ai_key_present() -> bool:
+        from core import aiframe
+        try:
+            return bool(aiframe.api_key())
+        except aiframe.Unavailable:
+            return False
+
     @app.get("/api/status")
     def status():
         """The overview's "Stan" cell: what this PC has to make films with."""
@@ -663,7 +765,8 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
         people = read_json(people_file)
         return {"stitcher": stitcher() is not None, "gpu": gpu_name(),
                 "cache": {"path": s["work"], "free_bytes": free},
-                "people": {"present": people is not None, "count": len([n for n in names_of(people) if n])}}
+                "people": {"present": people is not None, "count": len([n for n in names_of(people) if n])},
+                "ai_key": ai_key_present()}
 
     @app.get("/api/jobs/{job_id}/results")
     def results(job_id: int):
@@ -678,7 +781,8 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
                  for d in sorted(out.glob("shots_*")) if d.is_dir()]
         reels = (read_json(out / "reels.json") or {}).get("reels", [])
         return {"films": films, "shots": [s for s in shots if s["files"]],
-                "skipped": [r for r in reels if isinstance(r, dict) and r.get("status") != "planned"],
+                "skipped": [{**r, "title": named(str(r.get("tag", "")))["title"]} for r in reels
+                            if isinstance(r, dict) and r.get("status") != "planned"],
                 "report": (out / "scenes_report.txt").exists()}
 
     @app.get("/api/jobs/{job_id}/files/{path:path}")
@@ -716,6 +820,7 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
                 "scenes": [{**s, "thumb": (out / "review" / f"{s['id']}.jpg").exists(),
                             "default": default_shot(s, profile, mount)} for s in scenes.get("scenes", [])],
                 "presets": list(mount.presets) if mount else [],
+                "projections": {name: p.projection for name, p in mount.presets.items()} if mount else {},
                 "safe_zone": profile.safe_zone.model_dump() if profile else None,
                 "aspect": [profile.output.width, profile.output.height] if profile else [9, 16]}
 
@@ -752,6 +857,11 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
                 own = (shot.get("attrs") or {}).get("views") or {}        # views an AI made for this shot
                 if not framing or (mount and any(name not in mount.presets and name not in own for name in framing)):
                     raise HTTPException(422, f"Rolka {tag}, ujęcie {index}: nieznany preset kadru")
+                kinds = {(own[name].get("projection", "flat") if name in own else mount.presets[name].projection)
+                         for name in framing} if mount else set()
+                if len(kinds) > 1:
+                    raise HTTPException(422, f"Rolka {tag}, ujęcie {index}: kadry mają różne projekcje "
+                                             "(zwykła, planeta, rybie oko). W jednym ujęciu wszystkie muszą mieć tę samą.")
                 if (scene["id"], start, length) not in old:         # a changed shot stays inside its scene
                     length = round(min(max(length, speed), scene["end_s"] - scene["start_s"]), 2)
                     start = round(min(max(start, scene["start_s"]), scene["end_s"] - length), 2)

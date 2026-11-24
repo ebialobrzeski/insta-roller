@@ -34,6 +34,7 @@ class Detection(Strict):
     circling_gap_s: int
     thermal_min_s: int
     thermal_min_turn_deg: float
+    split_long_s: float = 0.0           # glides, climbs and thermals longer than twice this become several scenes; 0 = never
     glide_min_s: int
     circuit_agl_m: float
     circuit_max_s: int
@@ -171,6 +172,9 @@ class Calibration(Strict):
     stabilized: bool = False            # True: the source already has a level horizon
     stabilize: str = "none"             # Media SDK stitch: none | flowstate | direction-lock
     auto_level: bool = False            # level every clip with the camera's gravity sensor
+    # Flight: the camera is not in a fixed place. Level and nose direction of every scene
+    # are worked out from its sensors (core/mountcal.py) instead of yaw / pitch / roll above.
+    auto_nose: bool = False
 
 
 class Mount(Strict):
@@ -200,6 +204,9 @@ class Theme(Strict):
     speed: dict[str, float] = {}        # per scene type, replaces the profile's playback speed
     target_length_s: float | None = None
     min_material_s: float = 0.0         # less usable footage than this: no reel
+    # How many reels of this theme to make. Each further one takes other scenes,
+    # so a long recording gives several different reels instead of one.
+    count: int = 1
     ending: Ending | None = None
 
 
