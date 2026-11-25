@@ -33,7 +33,8 @@ const flight = () => (profile() || {}).kind !== "holiday";
 function themes() {                             // [{name, title, text, length, on}]
   const p = profile();
   return (p ? p.themes : []).map(name => {
-    const t = meta.themes.find(x => x.name === name) || {name, enabled: true};
+    const t = {...(meta.themes.find(x => x.name === name) || {name, enabled: true})};
+    if ((meta.lengths || {})[name]) t.length = meta.lengths[name];         // set once in the settings
     const [title, text] = THEMES[name] || [t.title || name, ""];
     return {name, title: t.title || title, text, length: +w.lengths[name] || +w.length || t.length || p.length, usual: t.length || p.length, count: Math.min(Math.max(+w.counts[name] || 1, 1), 12), def: !!t.enabled,
             on: w.themes && name in w.themes ? w.themes[name] : !!t.enabled};
@@ -211,7 +212,7 @@ function settingsBlock() {
           h("input", {type: "text", list: "ai-models", value: w.aiModel, placeholder: ai.model, autocomplete: "off", spellcheck: "false",
             oninput: e => { w.aiModel = e.target.value.trim(); }, onchange: () => draw()}),
           h("datalist", {id: "ai-models"}, (aiModels || []).map(m => h("option", {value: m.id}, `${m.name}${m.reasoning ? " · z namysłem" : ""} · $${m.prompt_usd_per_m} za mln tokenów`))),
-          h("small", {class: "muted"}, aiModels === null ? "Wczytuję listę modeli…" : aiModels && aiModels.length ? `Puste pole: ${ai.model}. Zacznij pisać, żeby wybrać inny.` : "Wpisz nazwę modelu, np. anthropic/claude-sonnet-5.5.")),
+          h("small", {class: "muted"}, aiModels === null ? "Wczytuję listę modeli…" : aiModels && aiModels.length ? `Puste pole: ${ai.model}. Zacznij pisać, żeby wybrać inny.` : "Wpisz nazwę modelu, np. anthropic/claude-haiku-5.5.")),
         engine === "openrouter" && h("label", {class: "field mt"}, "Ile AI może się namyślać (tokeny)",
           h("input", {type: "number", min: 0, max: 200000, step: 1000, inputmode: "numeric", value: w.aiReasoning, placeholder: String(ai.reasoning),
             oninput: e => { w.aiReasoning = e.target.value; }}),

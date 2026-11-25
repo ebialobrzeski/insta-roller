@@ -37,16 +37,26 @@ def moments(scenes: list[Scene], every_s: float) -> list[float]:
     return out
 
 
-def request_body(profile: Profile, numbered: list[tuple[int, float, Path]]) -> dict:
-    kind = "a glider flight" if profile.kind == "flight" else "a trip"
-    content = [{"type": "text", "text":
-                f"These are panoramas of the whole 360-degree sphere at moments of {kind}, each with a grid of yaw "
-                "(left to right, -180 to 180, 0 = straight ahead) and pitch (0 = horizon, negative = down). The "
+def request_body(profile: Profile, numbered: list[tuple[int, object, Path]]) -> dict:
+    if profile.kind == "flight":
+        what = ("These are panoramas of the whole 360-degree sphere at moments of a glider flight, each with a grid of "
+                "yaw (left to right, -180 to 180, 0 = straight ahead) and pitch (0 = horizon, negative = down). The "
                 "cockpit, the wings and the pilot are in every one of them and are not what we look for.\n"
                 "For each panorama say how much the WORLD OUTSIDE at that moment deserves a shot of its own in a "
                 "short film, from 0 to 10: water, a river, a town or a striking building, a coast, mountains, a "
                 "dramatic cloud or light, another aircraft, the airfield seen from above score high; plain haze, "
-                "even fields and empty sky score low. Be strict: most moments of a flight are ordinary.\n"
+                "even fields and empty sky score low. Be strict: most moments of a flight are ordinary.\n")
+    else:
+        what = ("These are panoramas of the whole 360-degree sphere at moments of a holiday, filmed with a camera on a "
+                "selfie stick, each with a grid of yaw (left to right, -180 to 180) and pitch (0 = horizon, negative = "
+                "down, positive = up). The person holding the stick is in every one of them.\n"
+                "For each panorama say how much THE PLACE at that moment deserves a shot of its own in a short film "
+                "of the trip, from 0 to 10, and where to point the camera. A famous or striking building, a monument, "
+                "a tower, a cathedral, a square, a ship, a harbour, the sea, a beach, mountains, a sunset score high, "
+                "the more so the better they are seen. A plain street, a wall, a queue, the backs of a crowd, a "
+                "corridor or a room with nothing in it score low. Give the yaw and pitch of the MIDDLE of the thing "
+                "worth showing (for a tall building: the middle of its height). Name it if you recognise it.\n")
+    content = [{"type": "text", "text": what +
                 "Answer with JSON only: {\"moments\": [{\"n\": <number of the panorama>, \"score\": <0-10>, "
                 "\"what\": \"<in Polish, a few words: what is worth showing>\", \"yaw\": <deg>, \"pitch\": <deg>}]}"}]
     for n, at, path in numbered:
@@ -121,20 +131,8 @@ def scout(rec, mount, profile: Profile, scenes: list[Scene], duration_s: float, 
     if cache.exists():
         found = json.loads(cache.read_text(encoding="utf-8"))
     else:
-        key_ = aiframe.api_key()
-        if post is None:
-            import httpx
-
-            def post(body: dict) -> str:
-                try:
-                    reply = httpx.post(aiframe.OPENROUTER_URL, json=body, timeout=300,
-                                       headers={"Authorization": f"Bearer {key_}", "X-Title": "insta-roller"})
-                except httpx.HTTPError as error:
-                    raise aiframe.Unavailable(f"OpenRouter cannot be reached ({type(error).__name__})") from None
-                data = reply.json() if reply.status_code == 200 else {}
-                if "choices" not in data:
-                    raise aiframe.Unavailable(f"OpenRouter answered {reply.status_code}: {reply.text[:200]}")
-                return data["choices"][0]["message"]["content"] or ""
+        post = post or aiframe.poster()
+        render.spheres([(rec, at, level_at(at)) for at in times], mount, work, log)
         numbered = []
         for n, at in enumerate(times, 1):
             path = folder / f"scoutpano_{fingerprint(rec.id, at, level_at(at), mount.model_dump_json(include={'calibration'}))}.jpg"
@@ -143,11 +141,81 @@ def scout(rec, mount, profile: Profile, scenes: list[Scene], duration_s: float, 
                              level=level_at(at), projection="pano")
             numbered.append((n, at, path))
             print(f"  shot {n}/{len(times)}  scout", flush=True)
-        found = []
-        for i in range(0, len(numbered), BATCH):
-            batch = numbered[i:i + BATCH]
-            found += parse_reply(post(request_body(profile, batch)), batch)
+        batches = [numbered[i:i + BATCH] for i in range(0, len(numbered), BATCH)]
+        print(f"scout: asking the model about {len(numbered)} panoramas", flush=True)
+        found = [item for part in aiframe.together(
+            [lambda batch=batch: parse_reply(post(request_body(profile, batch)), batch) for batch in batches],
+            lambda n, of: print(f"  part {n}/{of}  scout answers", flush=True)) for item in part]
         cache.write_text(json.dumps(found, ensure_ascii=False), encoding="utf-8")
     picked = pick(found, cfg.scout_max, cfg.scout_apart_s)
     progress(f"scout: looked at {len(times)} moments, kept {len(picked)} sights")
     return as_scenes(picked, scenes, duration_s, profile.scene_types["sight"].base_score)
+
+
+def clip_moments(start_s: float, end_s: float, every_s: float) -> list[float]:
+    """Times to look at inside one stretch of a clip: evenly, and at least its middle."""
+    length = end_s - start_s
+    count = max(int(length // max(every_s, 1.0)), 1)
+    return [round(start_s + length * (i + 0.5) / count, 1) for i in range(count)]
+
+
+def scout_clips(recordings: dict, mount, profile: Profile, scenes: list[Scene], work: Path, log: Path,
+                progress=print, post=None, limit: int = 240) -> list[Scene]:
+    """Sight scenes for a holiday: every usable stretch of every clip is looked at, and the best
+    moments of each day are kept. recordings: id -> Recording. scenes: what the sensors found."""
+    from . import render
+    from .contracts import Keyframe
+    cfg = profile.ai_framing
+    if not scenes or "sight" not in profile.scene_types:
+        return []
+    every = cfg.scout_every_holiday_s
+    wanted = [(s, at) for s in scenes for at in clip_moments(s.start_s, s.end_s, every)]
+    while len(wanted) > limit:                      # a long trip: look less often rather than send hundreds
+        every *= 1.5
+        wanted = [(s, at) for s in scenes for at in clip_moments(s.start_s, s.end_s, every)]
+    folder = work / "ai_framing"
+    folder.mkdir(parents=True, exist_ok=True)
+    key = fingerprint(cfg.model, [(s.recording, at, s.attrs.get("level")) for s, at in wanted],
+                      mount.model_dump_json(include={"calibration"}), "scout clips 1")
+    cache = folder / f"scout_{key}.json"
+    if cache.exists():
+        found = json.loads(cache.read_text(encoding="utf-8"))
+    else:
+        post = post or aiframe.poster()
+        render.spheres([(recordings[scene.recording], at, scene.attrs.get("level")) for scene, at in wanted], mount, work, log)
+        numbered = []
+        for n, (scene, at) in enumerate(wanted, 1):
+            rec = recordings[scene.recording]
+            level = scene.attrs.get("level")
+            path = folder / f"scoutpano_{fingerprint(rec.id, at, level, mount.model_dump_json(include={'calibration'}))}.jpg"
+            if not path.exists():
+                render.still(rec, mount, at, Keyframe(t=0, yaw=0, pitch=0, roll=0, fov=100), (768, 384), path, work, log,
+                             level=tuple(level) if level else None, projection="pano")
+            numbered.append((n, n - 1, path))       # the "time" is the place in `wanted`
+            print(f"  shot {n}/{len(wanted)}  scout", flush=True)
+        batches = [numbered[i:i + BATCH] for i in range(0, len(numbered), BATCH)]
+        print(f"scout: asking the model about {len(numbered)} panoramas", flush=True)
+        found = [item for part in aiframe.together(
+            [lambda batch=batch: parse_reply(post(request_body(profile, batch)), batch) for batch in batches],
+            lambda n, of: print(f"  part {n}/{of}  scout answers", flush=True)) for item in part]
+        cache.write_text(json.dumps(found, ensure_ascii=False), encoding="utf-8")
+    by_day: dict[str, list[dict]] = {}
+    for item in found:
+        scene, at = wanted[int(item["t"])]
+        by_day.setdefault(scene.attrs.get("day", ""), []).append({**item, "scene": scene, "at": at})
+    out, base = [], profile.scene_types["sight"].base_score
+    for day in sorted(by_day):
+        kept: list[dict] = []
+        for item in sorted(by_day[day], key=lambda f: -f["score"]):     # the best of the day, not two from the same seconds
+            near = any(k["scene"].recording == item["scene"].recording and abs(k["at"] - item["at"]) < 2 * HALF_S for k in kept)
+            if item["score"] >= MIN_SCORE and len(kept) < cfg.scout_max and not near:
+                kept.append(item)
+        for item in sorted(kept, key=lambda k: (k["scene"].recording, k["at"])):
+            scene, at = item["scene"], item["at"]
+            attrs = {"what": item["what"], "yaw_sight": item["yaw"], "pitch_sight": item["pitch"], "seen": item["score"],
+                     **{k: scene.attrs[k] for k in ("day", "level") if k in scene.attrs}}
+            out.append(Scene(id=f"s{len(out):02d}_sight", type="sight", recording=scene.recording,
+                             start_s=round(max(at - HALF_S, scene.start_s), 2), end_s=round(min(at + HALF_S, scene.end_s), 2),
+                             score=round(min(base + (item["score"] - MIN_SCORE) * 0.04, 1.0), 3), attrs=attrs))
+    progress(f"scout: looked at {len(wanted)} moments, kept {len(out)} sights")
+    return out

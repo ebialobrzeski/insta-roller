@@ -14,6 +14,7 @@ PITCH_UP = 1.0          # positive pitch looks up
 ROLL_FOR_BANK = -1.0    # view roll that levels a right bank when looking ahead
 PITCH_FOR_BANK = 1.0
 LEVEL_STEP_S = 0.5
+FOLLOW_STEP_S = 0.5     # keyframes of a view that follows its subject
 HOME_NEAR_M = 400.0     # closer to where the flight began than this, a view cannot be aimed at it
 
 
@@ -89,6 +90,33 @@ def frame_shot(presets: list[str], duration_s: float, mount: Mount, transition_s
                 else:
                     frames.append(Keyframe(t=round(t, 3), yaw=yaw, pitch=at_pitch, roll=p.roll, fov=p.fov,
                                            ev=p.exposure_ev))
+            continue
+        if p.path:                                  # the subject is somewhere else later in the shot: go with it
+            shift_yaw, shift_pitch = yaw - p.yaw, pitch - p.pitch
+            points = [(t_in, yaw, pitch)]
+            for part, at_yaw, at_pitch in sorted(p.path):
+                t = min(max(part * duration_s, t_in), t_out)
+                if t > points[-1][0] + 0.2:
+                    want = _shortest(points[-1][1], at_yaw + shift_yaw)
+                    if max_turn_dps > 0:            # a subject that jumps is followed at the speed a camera may turn
+                        limit = max_turn_dps * (t - points[-1][0])
+                        want = points[-1][1] + min(max(want - points[-1][1], -limit), limit)
+                    points.append((t, want, at_pitch + shift_pitch))
+            if points[-1][0] < t_out - 0.2:
+                points.append((t_out, points[-1][1], points[-1][2]))
+            t = t_in + FOLLOW_STEP_S
+            while t < t_out - 1e-6:                 # dense, so the move does not stop at every point
+                for (ta, ya, pa), (tb, yb, pb) in zip(points, points[1:]):
+                    if ta <= t <= tb:
+                        k = (t - ta) / max(tb - ta, 1e-6)
+                        frames.append(Keyframe(t=round(t, 3), yaw=ya + (yb - ya) * k, pitch=pa + (pb - pa) * k, roll=p.roll,
+                                               fov=p.fov if p.fov_end is None else p.fov + (p.fov_end - p.fov) * (t - t_in) / (t_out - t_in),
+                                               ev=p.exposure_ev))
+                        break
+                t += FOLLOW_STEP_S
+            yaw = points[-1][1]
+            frames.append(Keyframe(t=round(t_out, 3), yaw=yaw, pitch=points[-1][2], roll=p.roll,
+                                   fov=p.fov if p.fov_end is None else p.fov_end, ev=p.exposure_ev))
             continue
         yaw += p.pan_dps * (t_out - t_in)
         frames.append(Keyframe(t=round(t_out, 3), yaw=yaw, pitch=pitch, roll=p.roll + 360.0 * p.roll_turns,

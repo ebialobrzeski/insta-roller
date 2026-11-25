@@ -35,6 +35,7 @@ class Recording:
     start_utc: float | None      # camera clock at the first frame
     size: tuple[int, int]
     alt: dict[str, "Recording"] = field(default_factory=dict)    # the same take from other files
+    lead_s: float = 0.0          # a stitched segment: where the span that was asked for begins in it
 
     @property
     def duration_s(self) -> float:
@@ -56,22 +57,25 @@ class Recording:
             offset += length
         raise ValueError("empty recording")
 
-    def input_args(self, work: Path, start_s: float, duration_s: float = 0.0) -> list[str]:
+    def input_args(self, work: Path, start_s: float, duration_s: float = 0.0, still: bool = False) -> list[str]:
         """FFmpeg input arguments seeked to start_s on the joined timeline.
 
         Seeking inside one file is fast. Only a span that crosses a file
         boundary goes through the concat demuxer, whose seek is slow.
+        still: one frame is wanted and the nearest keyframe will do (planning, thumbnails):
+        the graphics card decodes, and only keyframes are decoded. Eight times quicker on 8K.
         """
+        quick = STILL_FLAGS if still else []
         offset = 0.0
         for path, length in zip(self.files, self.durations):
             if offset <= start_s and start_s + duration_s <= offset + length + 0.1:
-                return ["-ss", f"{start_s - offset:.3f}", "-i", str(path)]
+                return [*quick, "-ss", f"{start_s - offset:.3f}", "-i", str(path)]
             offset += length
         listing = work / f"concat_{self.id}_{self.kind}.txt"
         work.mkdir(parents=True, exist_ok=True)
         lines = ["file '%s'" % f.as_posix().replace("'", "'\\''") for f in self.files]
         listing.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        return ["-ss", f"{start_s:.3f}", "-f", "concat", "-safe", "0", "-i", str(listing)]
+        return [*quick, "-ss", f"{start_s:.3f}", "-f", "concat", "-safe", "0", "-i", str(listing)]
 
     def calibration(self, mount: Mount) -> Calibration | None:
         cal = mount.calibration.get(self.kind)
@@ -79,10 +83,11 @@ class Recording:
             cal = mount.calibration.get("dual_fisheye")
         return cal
 
-    def source_graph(self, mount: Mount, level: tuple[float, float] | None = None) -> str:
+    def source_graph(self, mount: Mount, level: tuple[float, float] | None = None, width: int | None = None) -> str:
         """Filter graph from the input to an equirectangular picture in the
         aircraft (or holder) frame, labelled [eq]. level = (pitch, roll) replaces
-        the mount's fixed tilt, for a camera that is levelled clip by clip."""
+        the mount's fixed tilt, for a camera that is levelled clip by clip.
+        width: a smaller sphere than the source gives (for stills), scaled before the stitch."""
         cal = self.calibration(mount)
         yaw, pitch, roll = (cal.yaw, cal.pitch, cal.roll) if cal else (0.0, 0.0, 0.0)
         if level is not None and not (cal and cal.stabilized):
@@ -98,16 +103,20 @@ class Recording:
             fov = cal.lens_fov if cal and cal.lens_fov else 190
             if self.kind == "insv":          # one video track per lens
                 w = min(self.size[0] * 2, cal.width) if cal and cal.width else self.size[0] * 2
+                w = min(w, width) if width else w
                 lens = f"scale={w // 2}:{w // 2}" if w < self.size[0] * 2 else "null"
                 head = f"[0:v:1]{lens}[l1];[0:v:0]{lens}[l0];[l1][l0]hstack=inputs=2,"
             else:
-                w = self.size[0]
-                head = "[0:v:0]"
+                w = min(self.size[0], width) if width else self.size[0]
+                head = f"[0:v:0]scale={w}:{w // 2}," if w < self.size[0] else "[0:v:0]"
             return f"{head}v360=input=dfisheye:output=e:ih_fov={fov:g}:iv_fov={fov:g}:w={w}:h={w // 2}{rot}{EQ}"
         if yaw or pitch or roll:
             return f"[0:v:0]v360=input=e:output=e{rot}{EQ}"
         return f"[0:v:0]null{EQ}"
 
+
+# Decoding for a single frame: on the graphics card when there is one, keyframes only.
+STILL_FLAGS = ["-hwaccel", "auto", "-skip_frame", "nokey"]
 
 # v360 yaw that brings a nose found by core.mountcal at +x degrees to the middle of the picture.
 # Both numbers were found on a real flight with the camera in two different places.

@@ -650,6 +650,7 @@ def test_scouting_turns_the_best_moments_into_sight_scenes(profile, mount, tmp_p
     profile.ai_framing.scout_every_s, profile.ai_framing.scout_max = 100.0, 2
     monkeypatch.setenv("OPENROUTER_API_KEY", "test")
     monkeypatch.setattr(render, "still", lambda rec, mount, at, view, size, out, *a, **k: Image.new("RGB", size, "blue").save(out) or out)
+    monkeypatch.setattr(render, "spheres", lambda *a, **k: None)             # no real footage here
     scenes = [Scene(id="000_glide", type="glide", start_s=0, end_s=1000, score=0.5, attrs={"level": [1.0, 2.0, 3.0]})]
     assert scout.moments(scenes, 100.0) == [50.0, 150.0, 250.0, 350.0, 450.0, 550.0, 650.0, 750.0, 850.0, 950.0]
     asked = []
@@ -696,3 +697,149 @@ def test_a_view_that_catches_the_camera_mount_is_moved_or_refused(profile, mount
     walled = {**item, "zones": [{"what": "wall", "yaw": [-150, 150], "pitch": [-80, 80]}]}
     reply = json.dumps({"shots": [{"shot": 1, "views": [{"yaw": 0, "pitch": 0, "fov": 90}, "B"]}]})
     assert aiframe.parse_reply(reply, [walled], profile, mount, False, 1, 1)[1][0] == ["wing_left"]      # the blocked view is left out
+
+
+def test_stills_come_from_one_kept_sphere_per_moment(tmp_path, monkeypatch):
+    from pathlib import Path
+    from core import ffmpeg, render
+    from core.contracts import Keyframe
+    mount = load_mount("selfie_stick")
+    clip = tmp_path / "VID_x.insv"
+    clip.write_bytes(b"0")
+    rec = Recording("x", "insv", [clip], [60.0], None, (3840, 3840))
+    calls = []
+
+    def run(args, log=None, **kwargs):
+        calls.append(args)
+        Path(args[-1]).write_bytes(b"jpg")
+    monkeypatch.setattr(ffmpeg, "run", run)
+    view = Keyframe(t=0, yaw=0, pitch=0, roll=0, fov=100)
+    render.still(rec, mount, 21.0, view, (384, 384), tmp_path / "a.jpg", tmp_path, tmp_path / "log", level=(2.0, -3.0))
+    render.still(rec, mount, 21.0, view, (384, 384), tmp_path / "b.jpg", tmp_path, tmp_path / "log", level=(2.0, -3.0))
+    render.still(rec, mount, 21.04, view, (1024, 512), tmp_path / "c.jpg", tmp_path, tmp_path / "log", level=(2.0, -3.0), projection="pano")
+    decodes = [c for c in calls if str(clip) in c]
+    assert len(decodes) == 1 and len(calls) == 4                   # one decode of the clip, three cuts from the picture
+    assert decodes[0][:4] == ["-hwaccel", "auto", "-skip_frame", "nokey"]           # the graphics card, keyframes only
+    assert "scale=1280:1280" in decodes[0][decodes[0].index("-filter_complex") + 1]  # stitched small, not at 8K
+
+    def refuse_card(args, log=None, **kwargs):
+        calls.append(args)
+        if "-hwaccel" in args:
+            raise RuntimeError("no device")
+        Path(args[-1]).write_bytes(b"jpg")
+    monkeypatch.setattr(ffmpeg, "run", refuse_card)
+    del calls[:]
+    render.sphere(rec, mount, 40.0, tmp_path, tmp_path / "log", (2.0, -3.0))
+    assert len(calls) == 2 and "-hwaccel" not in calls[1]          # falls back to the processor
+    del calls[:]
+    render.spheres([(rec, 5.0, None), (rec, 5.02, None), (rec, 9.0, None)], mount, tmp_path, tmp_path / "log")
+    assert sum("-hwaccel" in c for c in calls) == 2                # the same moment asked twice is made once
+
+
+def _boxed_file(path, payload=b"calibration and gyro"):
+    import struct
+
+    def box(kind, body):
+        return struct.pack(">I4s", 8 + len(body), kind) + body
+    trailer = box(b"inst", payload)
+    path.write_bytes(box(b"ftyp", b"isom") + box(b"mdat", b"x" * 100) + box(b"moov", b"y" * 20) + trailer)
+    return trailer
+
+
+def test_a_camera_file_is_cut_to_a_span_with_its_own_data_kept(tmp_path, monkeypatch):
+    from pathlib import Path
+    from core import ffmpeg
+    source = tmp_path / "VID_a.insv"
+    trailer = _boxed_file(source)
+    assert stitch.camera_trailer(source) == (source.stat().st_size - len(trailer), len(trailer))
+    calls = []
+
+    def run(args, log=None, **kwargs):
+        calls.append(args)
+        Path(args[-1]).write_bytes(b"PICTURES")
+    monkeypatch.setattr(ffmpeg, "run", run)
+    out = tmp_path / "cut.insv"
+    assert stitch.cut_camera_file(source, 12.5, 4.0, out, tmp_path / "log")
+    assert out.read_bytes() == b"PICTURES" + trailer             # the camera's data follows the copied pictures
+    assert calls[0][:2] == ["-ss", "12.500"] and calls[0][calls[0].index("-c") + 1] == "copy"      # nothing is re-encoded
+    plain = tmp_path / "plain.mp4"
+    plain.write_bytes(source.read_bytes()[:-len(trailer)])
+    assert stitch.camera_trailer(plain) is None and not stitch.cut_camera_file(plain, 0, 4, out, tmp_path / "log")
+
+
+def test_spans_are_stitched_as_short_videos_not_frame_by_frame(tmp_path, monkeypatch):
+    from pathlib import Path
+    from core import ffmpeg
+    runs, lengths = [], {}
+
+    def fake_run(self, source, out, log, options, duration_s):
+        runs.append((Path(source).name, options))
+        lengths[out.name] = duration_s
+        out.write_bytes(b"mp4")
+    monkeypatch.setattr(stitch.Stitcher, "_run", fake_run)
+    monkeypatch.setattr(ffmpeg, "run", lambda args, log=None, **kw: Path(args[-1]).write_bytes(b"PICTURES"))
+    monkeypatch.setattr(ffmpeg, "probe", lambda path: ffmpeg.MediaInfo(lengths[Path(path).name], None, ((3840, 1920),), True))
+    log = tmp_path / "log"
+
+    flight = tmp_path / "VID_flight.insv"
+    _boxed_file(flight)
+    rec = Recording("f", "insv", [flight], [1800.0], None, (2880, 2880))
+    s = stitch.Stitcher(Path("exe"), tmp_path / "cache")
+    made = s.segment(rec, 1414.7, 4.0, log, "none")
+    assert runs[-1][0].endswith(".cut.insv") and "--start-ms" not in runs[-1][1]    # a cut file, exported as video
+    assert made.lead_s == 0.0 and made.durations == [4.0] and not list((tmp_path / "cache").glob("*.insv"))
+    s.segment(rec, 1414.7, 4.0, log, "none")
+    assert len(runs) == 1                                                           # kept for the next time
+
+    clip = tmp_path / "VID_clip.insv"                   # a short stabilised clip is stitched whole, once, for all its shots
+    _boxed_file(clip)
+    rec = Recording("c", "insv", [clip], [30.0], None, (3840, 3840))
+    first = s.segment(rec, 5.0, 4.0, log, "direction-lock", 3840)
+    second = s.segment(rec, 20.0, 6.0, log, "direction-lock", 3840)
+    assert len(runs) == 2 and runs[-1][0] == "VID_clip.insv" and "--width" in runs[-1][1]
+    assert (first.lead_s, second.lead_s) == (5.0, 20.0) and first.files == second.files
+
+    walk = tmp_path / "VID_walk.insv"                   # a long stabilised file: cut from its start, to the last shot wanted
+    _boxed_file(walk)
+    rec = Recording("w", "insv", [walk], [600.0], None, (3840, 3840))
+    s.want(rec, 10.0, 5.0)
+    s.want(rec, 40.0, 5.0)
+    assert s.segment(rec, 10.0, 5.0, log, "direction-lock", 3840).lead_s == 10.0
+    assert lengths[[n for n in lengths if n.endswith("_45000.mp4")][0]] == 45.0 and len(runs) == 3
+    assert s.segment(rec, 40.0, 5.0, log, "direction-lock", 3840).lead_s == 40.0 and len(runs) == 3
+    late = s.segment(rec, 500.0, 4.0, log, "direction-lock", 3840)                  # far from the start: frame by frame is cheaper
+    assert "--start-ms" in runs[-1][1] and late.lead_s == 0.0 and len(runs) == 4
+
+
+def test_questions_that_do_not_depend_on_each_other_are_asked_side_by_side(monkeypatch):
+    import threading
+    import time
+    from core import aiframe
+    gate, inside, most = threading.Barrier(3, timeout=5), [0], [0]
+    lock = threading.Lock()
+
+    def ask(n):
+        with lock:
+            inside[0] += 1
+            most[0] = max(most[0], inside[0])
+        gate.wait()                                 # passes only when three are waiting together
+        with lock:
+            inside[0] -= 1
+        return n * 10
+    seen = []
+    assert aiframe.together([lambda n=n: ask(n) for n in range(3)], lambda n, of: seen.append((n, of))) == [0, 10, 20]
+    assert most[0] == 3 and sorted(seen) == [(1, 3), (2, 3), (3, 3)]
+
+    def fails():
+        raise aiframe.Unavailable("no credit")
+    with pytest.raises(aiframe.Unavailable):
+        aiframe.together([lambda: 1, fails])
+
+    monkeypatch.setattr(aiframe, "TICK_S", 0.05)    # while an answer is awaited, the job says so
+    said = []
+    with aiframe.waiting(said.append):
+        time.sleep(0.3)
+    assert said and said[0].startswith("ai: waiting for 1 answer from the model")
+    count = len(said)
+    time.sleep(0.2)
+    assert len(said) == count                       # and stops saying so when it has come

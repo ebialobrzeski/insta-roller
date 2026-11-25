@@ -30,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from core.reel import base_theme
-from core.config import PROFILES_DIR, Mount, Profile, Theme, list_names, load_mount, load_profile
+from core.config import PROFILES_DIR, Mount, Profile, Theme, list_names, load_mount, load_profile, load_theme
 
 from . import people as people_page
 from .db import Busy, Queue
@@ -92,6 +92,10 @@ class Settings(BaseModel):
     ai_model: str = Field("", max_length=120, pattern=r"^[\w.:/@-]*$")
     ai_reasoning: int = Field(0, ge=0, le=200_000)
     ai_scout: bool = False                  # with the remote AI: look through the whole recording for sights
+    # What the settings form changed, per profile: laid over the profile's file when a job is made,
+    # so the files (and their comments) stay as they are. {"flight": {"output": {"fps": 60}}}
+    overrides: dict[str, dict] = {}
+    lengths: dict[str, float] = {}          # reel theme -> seconds, for every new job
 
 
 class Text(BaseModel):
@@ -520,6 +524,7 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
         return {"profiles": found, "people": [n for n in people if n], "stitcher": stitcher() is not None,
                 "quality": settings()["quality"],
                 "ai": {k: settings()[k] for k in ("ai_framing", "ai_model", "ai_reasoning", "ai_scout")},
+                "lengths": settings()["lengths"],
                 "mounts": each("mounts", lambda m: {"presets": list(m.presets)}),
                 "themes": each("themes", lambda t: {"title": t.title, "enabled": t.enabled,
                                                     "length": t.target_length_s})}
@@ -574,6 +579,14 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
             options["out"] = "" if same(out, folder / OUT_DIR) else str(out)
         else:
             options["out"] = ""
+        if not options["profile_yaml"]:             # the settings form's changes ride along as the job's own profile
+            name = options["profile"]
+            if name == "auto":
+                name = "flight" if any(p.suffix.lower() == ".igc" for p in folder.iterdir() if p.is_file()) else "holiday"
+            if chosen["overrides"].get(name) and config_path("profiles", name).exists():
+                options["profile_yaml"] = yaml.safe_dump(effective(name), sort_keys=False, allow_unicode=True)
+        for theme, seconds in chosen["lengths"].items():
+            options["lengths"].setdefault(theme, seconds)
         if options["profile_yaml"]:
             parse("profiles", options["profile_yaml"])
         elif options["profile"] != "auto" and options["profile"] not in list_names("", profiles):
@@ -954,10 +967,47 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
     def settings_get():
         return {**settings(), "data": str(data), "profiles": str(profiles)}
 
+    def effective(name: str, overrides: dict | None = None) -> dict:
+        """A profile as a job will get it: its file with the form's changes laid over."""
+        path = config_path("profiles", name)
+        if not path.exists():
+            raise HTTPException(404, "Nie ma takiego zestawu ustawień")
+        data = yaml.safe_load(path.read_text("utf-8"))
+        return merge(data, json.loads(json.dumps((settings()["overrides"] if overrides is None else overrides).get(name) or {})))
+
+    @app.get("/api/config/profiles/{name}/form")
+    def profile_form(name: str):
+        """For the settings form: the profile's own values, the values in force, and its reel themes."""
+        if not NAME.fullmatch(name):
+            raise HTTPException(404)
+        base = yaml.safe_load(config_path("profiles", name).read_text("utf-8")) if config_path("profiles", name).exists() else None
+        if base is None:
+            raise HTTPException(404, "Nie ma takiego zestawu ustawień")
+        themes = []
+        for theme in base.get("themes", []):
+            try:
+                t = load_theme(theme, profiles)
+                themes.append({"name": t.name, "title": t.title or t.name, "length": t.target_length_s or base.get("target_length_s")})
+            except Exception:
+                pass
+        values = Profile.model_validate(effective(name)).model_dump()
+        return {"base": Profile.model_validate(base).model_dump(), "values": values, "themes": themes,
+                "changed": bool(settings()["overrides"].get(name))}
+
     @app.put("/api/settings")
     def settings_put(body: Settings):
         """The cache folder is created here, so a path that cannot be used is refused at once."""
         new = {**settings(), **body.model_dump(exclude_unset=True)}
+        for name in new["overrides"]:               # a change that makes a profile unusable is refused here, not at render time
+            if not NAME.fullmatch(name):
+                raise HTTPException(422, "Zła nazwa zestawu ustawień")
+            try:
+                Profile.model_validate(effective(name, new["overrides"]))
+            except ValidationError as error:
+                first = error.errors()[0]
+                raise HTTPException(422, f"Ustawienie {'.'.join(str(x) for x in first['loc'])}: {first['msg']}")
+        new["overrides"] = {k: v for k, v in new["overrides"].items() if v}
+        new["lengths"] = {k: v for k, v in new["lengths"].items() if NAME.fullmatch(k) and v and v >= 5}
         work = new["work"].strip()
         if work:
             work = str(absolute(work))

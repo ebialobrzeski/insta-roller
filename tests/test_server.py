@@ -351,6 +351,7 @@ def test_cache_folder_setting_goes_to_the_cli_as_work(env):
     client = env.client
     assert client.get("/api/settings").json() == {"work": "", "quality": "auto", "people_names": [],
                                                   "ai_framing": "", "ai_model": "", "ai_reasoning": 0, "ai_scout": False,
+                                                  "overrides": {}, "lengths": {},
                                                   "data": str(env.data), "profiles": str(env.profiles)}
     work = env.tmp / "cache"
     assert client.put("/api/settings", json={"work": "cache"}).status_code == 400
@@ -368,6 +369,7 @@ def test_cache_folder_setting_goes_to_the_cli_as_work(env):
     assert env.client.put("/api/settings", json={"quality": "nonsense"}).status_code == 422
     assert env.client.put("/api/settings", json={"work": ""}).json() == {
         "work": "", "quality": "good", "people_names": [], "ai_framing": "", "ai_model": "", "ai_reasoning": 0, "ai_scout": False,
+                                                  "overrides": {}, "lengths": {},
         "data": str(env.data), "profiles": str(env.profiles)}
     assert "--work" not in env.job()["commands"][0] and env.client.get("/api/meta").json()["quality"] == "good"
 
@@ -435,7 +437,8 @@ def test_ui_pages_are_served(env):
     assert page.status_code == 200 and 'id="view"' in page.text and "/static/app.js" in page.text
     assert "http://" not in page.text and "https://" not in page.text                # works offline: nothing from the web
     files = {name: env.client.get(f"/static/{name}") for name in (
-        "app.js", "ui.js", "live.js", "home.js", "wizard.js", "films.js", "review.js", "people.js", "settings.js", "style.css")}
+        "app.js", "ui.js", "live.js", "home.js", "wizard.js", "films.js", "review.js", "people.js", "settings.js",
+        "settings_form.js", "style.css")}
     assert all(r.status_code == 200 and r.headers["cache-control"] == "no-cache" for r in files.values())   # never old JS
     assert all(text in files["app.js"].text for text in ("Przegląd", "Nowe rolki", "Moje nagrania", "Osoby", "Ustawienia"))
     assert "Znajdź najlepsze momenty" in files["wizard.js"].text and "Zrób rolki" in files["review.js"].text
@@ -1174,3 +1177,32 @@ def test_recording_label_reads_like_a_title():
     days = {"recordings": [{"day": "20250802"}, {"day": "20250819"}]}
     assert web.recording_label("holiday", "D:/x/Rejs", days) == "Wyjazd 2–19 sierpnia 2025"
     assert web.recording_label("holiday", "D:/x/Rejs", {"recordings": [{"day": "20250730"}, {"day": "20250802"}]})         == "Wyjazd 30 lipca 2025 – 2 sierpnia 2025"
+
+
+def test_settings_form_changes_ride_on_top_of_the_profile_file(env):
+    client = env.client
+    form = client.get("/api/config/profiles/flight/form").json()
+    assert form["values"]["output"]["fps"] == form["base"]["output"]["fps"] and not form["changed"]
+    assert any(t["name"] == "thermal" for t in form["themes"])
+    changed = {"output": {"width": 2160, "height": 3840, "fps": 60}, "export": {"codec": "hevc", "bitrate_mbps": 60}}
+    assert client.put("/api/settings", json={"overrides": {"flight": changed}, "lengths": {"thermal": 45}}).status_code == 200
+    again = client.get("/api/config/profiles/flight/form").json()
+    assert again["changed"] and again["values"]["output"] == {"width": 2160, "height": 3840, "fps": 60.0}
+    assert again["values"]["export"]["codec"] == "hevc" and again["base"]["export"]["codec"] == "h264"   # the file is as it was
+    job = env.submit(profile="flight")
+    assert "fps: 60" in job["options"]["profile_yaml"] and "bitrate_mbps: 60" in job["options"]["profile_yaml"]
+    assert "--lengths=thermal=45" in job["commands"][1]
+    assert client.put("/api/settings", json={"overrides": {"flight": {"output": {"fps": "fast"}}}}).status_code == 422
+    assert client.put("/api/settings", json={"overrides": {"flight": {}}}).json()["overrides"] == {}        # back to the file
+
+
+def test_export_settings_become_encoder_arguments(monkeypatch):
+    from core import ffmpeg, render
+    from core.config import Export
+    monkeypatch.setattr(ffmpeg, "has_encoder", lambda name: True)
+    assert render.encoder_args("auto", Export()) == ["-c:v", "h264_nvenc", "-preset", "p5", "-rc", "vbr", "-cq", "21", "-b:v", "0"]
+    hevc = render.encoder_args("auto", Export(codec="hevc", bitrate_mbps=40))
+    assert hevc[:2] == ["-c:v", "hevc_nvenc"] and "40M" in hevc and "60M" in hevc and hevc[-2:] == ["-tag:v", "hvc1"]
+    assert render.encoder_args("cpu", Export(quality=18)) == ["-c:v", "libx264", "-preset", "medium", "-crf", "16"]
+    monkeypatch.setattr(ffmpeg, "has_encoder", lambda name: False)
+    assert render.encoder_args("gpu", Export(codec="hevc"))[:2] == ["-c:v", "libx265"]         # no graphics card: the processor does it

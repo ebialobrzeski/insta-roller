@@ -20,6 +20,14 @@ class Output(Strict):
     fps: float
 
 
+class Export(Strict):
+    """How the finished video is encoded."""
+    codec: Literal["h264", "hevc"] = "h264"     # hevc: smaller files, plays on newer devices
+    quality: int = 21                           # constant quality: 14 = near lossless ... 30 = small and soft
+    bitrate_mbps: float = 0.0                   # above 0: aim at this bitrate instead of a constant quality
+    audio_kbps: int = 160
+
+
 class Detection(Strict):
     takeoff_speed_ms: float
     landing_speed_ms: float
@@ -101,7 +109,9 @@ class Holiday(Strict):
 class AiFraming(Strict):
     """A model picks the framing of every shot from the candidates (core/aiframe.py)."""
     engine: Literal["off", "local", "openrouter"] = "off"
-    model: str = "anthropic/claude-sonnet-5.5"      # OpenRouter model, must accept images
+    # OpenRouter model, must accept images. Haiku was the cheapest that kept a landmark in frame in our
+    # own comparison (Pisa, random panoramas, Nov 2026); Sonnet costs about twelve times as much.
+    model: str = "anthropic/claude-haiku-5.5"
     # openrouter: tokens the model may spend thinking before it answers (0 = no extended reasoning).
     # More gives a more considered film and costs more; models without reasoning ignore it.
     reasoning_tokens: int = 0
@@ -112,6 +122,7 @@ class AiFraming(Strict):
     # every scout_every_s seconds is shown to the model; the best become scenes of the type "sight".
     scout: bool = False
     scout_every_s: float = 90.0
+    scout_every_holiday_s: float = 20.0  # holiday clips are short: looked at more often, at least once each
     scout_max: int = 8
     scout_apart_s: float = 150.0
     person_shots: int = 2               # openrouter: shots of a reel that may show the pilot / the holder
@@ -132,7 +143,8 @@ class Profile(Strict):
     audio_fade_s: float = 0.25
     mount: str
     themes: list[str]
-    encoder: str
+    encoder: str                        # auto | gpu | cpu, or the name of an FFmpeg encoder
+    export: Export = Export()
     transition_s: float
     max_turn_dps: float = 60.0          # the camera never turns faster than this between presets
     max_track_dps: float = 15.0         # ... nor while it follows a person
@@ -171,6 +183,9 @@ class Preset(Strict):
     # turns under a still picture; target = keep looking at a place ("home": where the flight began).
     world: bool = False
     target: Literal["", "home"] = ""
+    # The subject moves through the picture (a hand-held camera turns, the ground slides by):
+    # where it is later in the shot, as [part of the shot 0..1, yaw, pitch]; the view follows.
+    path: list[list[float]] = []
 
 
 class Calibration(Strict):

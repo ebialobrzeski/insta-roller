@@ -1,6 +1,7 @@
 // Ustawienia: the few simple ones first; the YAML files of profiles, mounts and themes under "Zaawansowane".
 import {$, h, api, icon, guard, toast, size, inWindow, chooseFolder} from "./ui.js";
 import {setContext, themeSwitch} from "./live.js";
+import * as form from "./settings_form.js";
 
 const QUALITY = [["auto", "Automatycznie"], ["best", "Najlepsza"], ["good", "Dobra"], ["fast", "Szybki podgląd"]];
 const FILES = [["profiles", "Zestawy ustawień (lot, urlop)"], ["mounts", "Zamocowania kamery i kadry"], ["themes", "Rodzaje rolek"]];
@@ -38,7 +39,7 @@ export async function show(view) {
     }}, text)));
 
   // Who frames the shots: chosen once here, used by every new set of reels unless changed there.
-  const model = h("input", {type: "text", list: "s-models", value: s.ai_model, autocomplete: "off", spellcheck: "false", placeholder: "anthropic/claude-sonnet-5.5", "aria-label": "Model AI"});
+  const model = h("input", {type: "text", list: "s-models", value: s.ai_model, autocomplete: "off", spellcheck: "false", placeholder: "anthropic/claude-haiku-5.5", "aria-label": "Model AI"});
   const models = h("datalist", {id: "s-models"});
   const thinking = h("input", {type: "number", min: 0, max: 200000, step: 1000, inputmode: "numeric", value: s.ai_reasoning || "", placeholder: "0", "aria-label": "Ile AI może się namyślać, w tokenach", style: "max-width:140px"});
   const remote = h("div", {hidden: s.ai_framing !== "openrouter"},
@@ -46,12 +47,12 @@ export async function show(view) {
       ? "Klucz do OpenRouter jest ustawiony. AI dostaje małe klatki z nagrania i opis ujęć; bez danych GPS i nazw plików."
       : h("span", {}, h("b", {}, "Brakuje klucza do OpenRouter."), "Dopisz linię OPENROUTER_API_KEY=… do pliku .env w folderze aplikacji i uruchom ją ponownie. Bez klucza rolki powstaną ze stałymi kadrami.")),
     h("label", {class: "field mt"}, "Model", model, models,
-      h("small", {class: "muted"}, "Puste pole: anthropic/claude-sonnet-5.5. Zacznij pisać, żeby wybrać inny z listy OpenRouter.")),
+      h("small", {class: "muted"}, "Puste pole: anthropic/claude-haiku-5.5. Zacznij pisać, żeby wybrać inny z listy OpenRouter.")),
     h("label", {class: "field mt"}, "Ile AI może się namyślać (tokeny)", thinking,
       h("small", {class: "muted"}, "0 = odpowiada od razu. Więcej = lepiej przemyślane rolki, ale drożej i dłużej.")),
     h("label", {class: "switch mt"}, h("input", {type: "checkbox", checked: !!s.ai_scout, onchange: e => put({ai_scout: e.target.checked}, "Zapisano")}),
-      h("span", {}, "AI szuka też ciekawych widoków w całym nagraniu",
-        h("small", {}, "Co półtorej minuty lotu pokazuję modelowi całą panoramę, a on wskazuje jeziora, miasta, chmury warte osobnego ujęcia. Kilka dodatkowych zapytań na lot."))),
+      h("span", {}, "AI szuka też zabytków i widoków w całym nagraniu",
+        h("small", {}, "Pokazuję modelowi całą panoramę co półtorej minuty lotu albo co 20 sekund klipu z urlopu, a on wskazuje to, co warto pokazać: wieżę, katedrę, port, jezioro. Bez tego momenty wybierają same czujniki, które nie wiedzą, co jest w kadrze. Kilka do kilkunastu dodatkowych zapytań."))),
     h("button", {class: "btn mt", type: "button", onclick: () => put({ai_model: model.value.trim(), ai_reasoning: +thinking.value || 0}, "Zapisano ustawienia AI")}, "Zapisz"));
   const fill = guard(async () => { if (models.children.length) return; const list = (await api("/api/ai/models")).models || []; models.replaceChildren(...list.map(m => h("option", {value: m.id}, `${m.name}${m.reasoning ? " · z namysłem" : ""} · $${m.prompt_usd_per_m} za mln tokenów`))); });
   if (s.ai_framing === "openrouter") fill();
@@ -91,9 +92,12 @@ export async function show(view) {
           h("dt", {}, "Karta graficzna"), h("dd", {class: state.gpu ? "ok" : "muted"}, state.gpu || "nie wykryto"),
           h("dt", {}, "Osoby do rozpoznania"), h("dd", {}, state.people.present ? String(state.people.count) : "brak listy")),
         !state.stitcher && h("p", {class: "muted mt", style: "font-size:13px"}, "Bez programu do sklejania od producenta kamery rolki powstają w jakości „Dobra”: na łączeniu obiektywów bywa widoczny szew."))),
+    h("div", {class: "gap"}),
+    h("div", {id: "s-form"}),
+    h("div", {class: "gap"}),
     h("div", {class: "row"}, h("div", {class: "cell"},
       h("details", {open: advanced, ontoggle: guard(async e => { advanced = e.target.open; if (advanced && !$("#s-name").options.length) await listFiles(); })},
-        h("summary", {}, "Zaawansowane: pliki ustawień"),
+        h("summary", {}, "Dla zaawansowanych: pliki ustawień w formie tekstu"),
         h("p", {class: "muted", style: "font-size:14px;margin:8px 0 0"}, "Długości rolek, kadry, położenie danych lotu na obrazie i reszta szczegółów jako pliki tekstowe (YAML). Zapis sprawdza poprawność; kolejne rolki używają zmian od razu."),
         h("div", {class: "inline mt"},
           h("select", {id: "s-kind", "aria-label": "Rodzaj pliku", onchange: guard(() => listFiles())}, FILES.map(([value, text]) => h("option", {value}, text))),
@@ -104,5 +108,6 @@ export async function show(view) {
           h("button", {class: "btn primary", type: "button", onclick: guard(saveFile)}, "Zapisz"),
           h("span", {class: "muted", style: "font-size:13px"}, "Nowy plik: zmień pole name i zapisz.")),
         h("dl", {class: "kv mt2"}, h("dt", {}, "Pliki ustawień"), h("dd", {class: "mono"}, s.profiles), h("dt", {}, "Dane aplikacji"), h("dd", {class: "mono"}, s.data))))));
+  await guard(async () => form.show($("#s-form"), s, await api("/api/meta")))();
   if (advanced) await guard(() => listFiles())();
 }

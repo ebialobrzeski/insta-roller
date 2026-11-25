@@ -237,7 +237,22 @@ const SAID = [
   [/^analyze: finding the phases/, "Szukam faz lotu: startu, kominów, przelotów"],
   [/^analyze: camera position found/, "Ustaliłem, jak była ustawiona kamera"],
   [/^analyze: looking through the flight/, "AI przegląda cały lot w poszukiwaniu widoków"],
+  [/^analyze: looking through the clips/, "AI przegląda nagrania w poszukiwaniu zabytków i widoków"],
   [/shot (\d+)\/(\d+)\s+scout/, m => `Panorama ${m[1]} z ${m[2]} dla AI`],
+  [/^scout: asking the model about (\d+) panoramas/, m => `AI ogląda ${m[1]} panoram`],
+  [/part (\d+)\/(\d+)\s+scout answers/, m => `AI obejrzało ${m[1]} z ${m[2]} partii panoram`],
+  [/^plan: (\d+) reels to lay out/, m => `Wybieram momenty do rolek (${m[1]})`],
+  [/^plan: decoding (\d+) moments/, m => `Przygotowuję ${m[1]} panoram dla AI`],
+  [/part (\d+)\/(\d+)\s+panorama/, m => `Panorama ${m[1]} z ${m[2]} dla AI`],
+  [/^plan: asking the model what is in the way/, "AI sprawdza, co zasłania kamerę"],
+  [/part (\d+)\/(\d+)\s+zones/, m => `AI sprawdziło ${m[1]} z ${m[2]} ustawień kamery`],
+  [/^plan: reel (\d+)\/(\d+)/, m => `Układam rolkę ${m[1]} z ${m[2]}`],
+  [/^ai: asking about (\d+) shots/, m => `AI wybiera kadry dla ${m[1]} ujęć`],
+  [/^ai: reviewing (\d+) shots/, m => `AI ogląda swoje kadry i poprawia (${m[1]} ujęć)`],
+  [/^ai: waiting for (\d+) answers? from the model \((\d+) s\)/, m => `Czekam na odpowiedź AI: ${m[1] === "1" ? "1 zapytanie" : `zapytań: ${m[1]}`}, już ${m[2]} s`],
+  [/^ai framing: .*the theme's own framing is used/, "AI niedostępne: używam kadrów z tematu"],
+  [/^render: stitching (\d+) s of footage/, m => `Sklejam ${m[1]} s nagrania z obu obiektywów`],
+  [/^render: starting (\S+)/, "Zaczynam kolejne ujęcie"],
   [/^scout: looked at (\d+) moments, kept (\d+)/, m => `AI wypatrzyło ${m[2]} widoków wartych ujęcia`],
   [/^analyze: (\d+) scenes/, m => `Znalazłem ${m[1]} momentów`],
   [/^people: looking for/, "Szukam znajomych twarzy w nagraniach"],
@@ -251,7 +266,11 @@ const SAID = [
   [/^render: done/, "Rolka gotowa"],
 ];
 export function lastSaid(job) {
-  const line = (job.log || "").split("\n").map(l => l.trim()).filter(l => l && !l.startsWith("$")).pop() || "";
+  // Only what the step that runs now has said: the last line of the step before it is stale news.
+  const lines = (job.log || "").split("\n").map(l => l.trim()).filter(Boolean);
+  const from = lines.map(l => l.startsWith("$")).lastIndexOf(true);
+  const line = lines.slice(from + 1).pop() || "";
+  if (!line && from >= 0) return "Zaczynam…";
   for (const [pattern, text] of SAID) { const m = pattern.exec(line); if (m) return typeof text === "function" ? text(m) : text; }
   return line.length > 90 ? `${line.slice(0, 90)}…` : line;
 }

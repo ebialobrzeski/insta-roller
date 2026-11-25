@@ -33,3 +33,5 @@ presets:
   bubble_view: {yaw: 0, pitch: 0,   fov: 220, projection: fisheye, track: travel, safe_zone: false}
   # around: a slow look round, from the side across the way ahead.
   around:      {yaw: -60, pitch: 0, fov: 115, track: travel, pan_dps: 15, safe_zone: false}
+  # Aimed at what the model saw (yaw and pitch come with the scene).
+  sight:       {yaw: 0, pitch: 0, fov: 100, track: sight, safe_zone: false}

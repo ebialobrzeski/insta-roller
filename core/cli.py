@@ -334,7 +334,29 @@ def step_plan(job: Job) -> list[FramingPlan]:
     ai_ctx = job.context(scenes) if job.profile.ai_framing.engine != "off" else None
     themes = {t.name: t for t in job.themes}
     shown: list[str] = []                       # what the reels planned so far show, for the AI
-    for reel, entry in zip(plans, [e for e in entries if e.status == "planned"]):
+    planned = list(zip(plans, [e for e in entries if e.status == "planned"]))
+    print(f"plan: {len(planned)} reels to lay out", flush=True)
+
+    def theme_of(reel: ReelPlan):
+        from .reel import base_theme
+        return themes.get(base_theme(reel.theme)[0]) or (job.themes[0] if job.profile.kind != "flight" else None)
+    if ai_ctx is not None:                      # what the reels need from the model apart from each other, all at once
+        from . import aiframe
+        fresh = []
+        for reel, entry in planned:
+            reel_path = job.path(f"reel_plan_{entry.tag}.json")
+            if reel_path.exists() and not job.args.force:
+                try:
+                    old = contracts.read(reel_path, ReelPlan)
+                    if old.removed or old.edited:
+                        continue
+                except Exception:
+                    pass
+            fresh.append((reel, theme_of(reel)))
+        aiframe.prepare(fresh, scenes.scenes, job.profile, job.mount, ai_ctx,
+                        progress=lambda text: print(text, flush=True))
+    for number, (reel, entry) in enumerate(planned, 1):
+        print(f"plan: reel {number}/{len(planned)}: {entry.tag}", flush=True)
         reel_path = job.path(f"reel_plan_{entry.tag}.json")
         framing_path = job.path(f"framing_plan_{entry.tag}.json")
         # A reel plan edited by hand (or in the scene review) is kept as it is.
@@ -348,10 +370,8 @@ def step_plan(job: Job) -> list[FramingPlan]:
                 reel = old
                 entry.length_s, entry.shots = reel.length_s, len(reel.shots)
         if ai_ctx is not None and not reel.edited:      # a model chooses among the possible framings
-            from . import aiframe
-            from .reel import base_theme
-            theme = themes.get(base_theme(reel.theme)[0]) or (job.themes[0] if job.profile.kind != "flight" else None)
-            reel = aiframe.apply(reel, scenes.scenes, job.profile, job.mount, theme, ai_ctx, elsewhere=list(shown))
+            reel = aiframe.apply(reel, scenes.scenes, job.profile, job.mount, theme_of(reel), ai_ctx,
+                                 progress=lambda text: print(text, flush=True), elsewhere=list(shown))
             shown += [f"{reel.title or reel.theme}: " + ", ".join(
                 " -> ".join(n if n not in (s.attrs.get("views") or {}) else
                             f"own view yaw {s.attrs['views'][n]['yaw']:.0f} pitch {s.attrs['views'][n]['pitch']:.0f}" for n in s.framing)
@@ -487,7 +507,7 @@ def main(argv: list[str] | None = None) -> None:
                             "needs OPENROUTER_API_KEY). Default: from the profile")
         p.add_argument("--ai-scout", action=argparse.BooleanOptionalAction, default=None,
                        help="openrouter: also look through the whole recording for sights worth a shot (more requests)")
-        p.add_argument("--ai-model", help="openrouter: the model, e.g. anthropic/claude-sonnet-5.5 (default: from the profile)")
+        p.add_argument("--ai-model", help="openrouter: the model, e.g. anthropic/claude-haiku-5.5 (default: from the profile)")
         p.add_argument("--ai-reasoning", type=int, metavar="TOKENS",
                        help="openrouter: tokens the model may spend reasoning before it answers; 0 = none")
         p.add_argument("--enable", help="comma-separated themes to switch on, e.g. landing")

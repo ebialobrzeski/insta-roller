@@ -458,3 +458,12 @@ dialog.picker { width: min(920px, calc(100vw - 32px)); max-height: calc(100vh - 
 @media (prefers-reduced-motion: reduce) { .steps3 .on::after, .alive i, .working::after { animation: none; } .working::after { left: 0; width: 100%; opacity: .5; } }
 .linklike { all: unset; cursor: pointer; margin-left: 6px; text-decoration: underline dotted; color: var(--muted); }
 .linklike:focus-visible { outline: 2px solid var(--accent); }
+
+/* settings form */
+.slide { display: flex; align-items: center; gap: 12px; }
+.slide input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
+.slide output { font: 13px var(--mono); min-width: 64px; text-align: right; color: var(--ink); white-space: nowrap; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+@media (max-width: 720px) { .pair { grid-template-columns: 1fr; } }
+#s-form .cell .field { margin-top: 14px; }
+#s-form .cell .switch { margin-top: 12px; }

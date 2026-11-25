@@ -213,7 +213,11 @@ class Detector:
         if self._app is None:
             if not available():
                 raise FacesError("Face recognition needs insightface and onnxruntime: pip install insta-roller[faces]")
+            import warnings
             from insightface.app import FaceAnalysis
+            # insightface calls a scikit-image function that is deprecated since 0.26 (gone in 2.2):
+            # it still works, and the warning only clutters the job log the user reads.
+            warnings.filterwarnings("ignore", category=FutureWarning, module=r"insightface\..*")
             kwargs = {"root": self.root} if self.root else {}
             app = FaceAnalysis(name=self.model, allowed_modules=["detection", "recognition"],
                                providers=self.providers, **kwargs)

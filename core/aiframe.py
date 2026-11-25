@@ -21,10 +21,13 @@ wrong (no model, no key, no network) leaves the theme's own framing in place.
 from __future__ import annotations
 
 import base64
+import contextlib
 import io
 import json
 import os
 import re
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -45,7 +48,7 @@ KEY_ENV = "OPENROUTER_API_KEY"
 BATCH = 30                      # shots per request: a whole reel, so the model sees the film as one
 MIN_VIEW_S = 2.5                # a view in a sequence needs at least this long
 ANSWER_TOKENS = 8000           # room for the answer itself, on top of the reasoning budget
-PROMPT = 9                      # raised when the instructions change, so cached answers are not reused
+PROMPT = 10                      # raised when the instructions change, so cached answers are not reused
 
 
 class Unavailable(RuntimeError):
@@ -168,9 +171,18 @@ def custom_preset(spec: dict, profile: Profile, hold_s: float, world: bool = Fal
     held = world and projection == "flat" and bool(spec.get("hold"))
     aimed = world and projection == "flat" and str(spec.get("look_at", "")).lower() in ("airfield", "home")
     level = projection == "flat" and (str(spec.get("horizon", "")).lower() == "level" or held or aimed)
-    if held or aimed:                               # the world gives the motion: no pan on top of it
+    follow = []
+    for part, later in zip((0.5, 0.92), list(spec.get("follow") or [])[:2]):     # where the subject is at the middle, the end
+        try:
+            follow.append([part, round((float(later["yaw"]) + 180) % 360 - 180, 1),
+                           round(min(max(float(later.get("pitch", spec.get("pitch", 0.0))), -90.0), 90.0), 1)])
+        except (KeyError, TypeError, ValueError):
+            break
+    if projection != "flat":
+        follow = []
+    if held or aimed or follow:                     # the world, or the subject, gives the motion: no pan on top of it
         pan = 0.0
-    return Preset(world=held and not aimed, target="home" if aimed else "", yaw=round((float(spec["yaw"]) + 180) % 360 - 180, 1),
+    return Preset(world=held and not aimed and not follow, target="home" if aimed and not follow else "", path=follow, yaw=round((float(spec["yaw"]) + 180) % 360 - 180, 1),
                   pitch=round(min(max(float(spec.get("pitch", 0.0)), -90.0), 90.0), 1),
                   fov=wide, fov_end=zoom, projection=projection, pan_dps=round(min(max(pan, -limit), limit), 2),
                   roll_turns=1.0 if spec.get("roll") else 0.0, horizon="locked" if level else "aircraft",
@@ -489,11 +501,24 @@ def request_body(batch: list[dict], profile: Profile, mount: Mount, title: str, 
             "frame. Give the yaw / pitch at the START of the shot.\n"
             "  \"look_at\": \"airfield\" keeps the picture on the airfield the flight began from, wherever the aircraft "
             "points (yaw and pitch are then worked out for you; give a fov).\n" if world else "")
+        + "A view can FOLLOW its subject: \"follow\": [{\"yaw\": deg, \"pitch\": deg}, {\"yaw\": deg, \"pitch\": deg}] says where "
+          "the same thing is in the MIDDLE and in the END panorama (the yaw / pitch of the view itself are where it "
+          "is at the START). The camera then stays on it for the whole shot. "
+        + ("The camera here is carried by hand and turns all the time: a building that is at yaw 20 at the start may "
+           "be at yaw -60 at the end. A view of a landmark WITHOUT follow slides off it, so read its position in all "
+           "three panoramas and give them.\n" if not flight else
+           "Use it for something on the ground that slides by.\n")
         + "A shot may also be a SPLIT FRAME: add \"second\": [views] and the frame is cut in two, your \"views\" above "
           "and the second picture below (normal projection, one or two views). Use it to show two directions at "
           "once: what is happening and who is watching it, the ground below and the horizon ahead.\n\n"
         "Direct it like a film:\n"
-        "- every shot shows something different; no two shots with the same path, no two neighbours that look "
+        + ("" if flight else
+           "- THE PLACE COMES FIRST. If a famous building, a monument, a tower, a ship, a harbour, a beach or a view "
+           "that says where we are is anywhere on the sphere, it is the subject of the shot: aim at it and follow it, "
+           "with enough field of view to show all of it (a tall tower needs the camera tilted up and a wide lens). A "
+           "wall, the pavement, the backs of a crowd or the travellers' own faces are not what the film is about "
+           "when such a landmark is there. People we travel with may share the frame with it;\n")
+        + "- every shot shows something different; no two shots with the same path, no two neighbours that look "
         "the same way;\n"
         "- make moves mean something: start on a detail and pull back to reveal the whole, sweep from the wing "
         "tip along the horizon, rise from the ground straight below to the horizon, turn from the view to who is "
@@ -581,7 +606,7 @@ def parse_reply(text: str, batch: list[dict], profile: Profile, mount: Mount, sh
                 if isinstance(view, dict):
                     name = f"ai{shot.index}{chr(97 + i)}"
                     made = custom_preset(view, profile, hold, bool(item.get("world")))
-                    if zones and made.projection == "flat" and not made.world and not made.target:
+                    if zones and made.projection == "flat" and not made.world and not made.target and not made.path:
                         # Half a frame is twice as wide for its height: it reaches further to the sides.
                         free = blocked.clear(zones, made.yaw, made.pitch, made.fov, aspect * (2 if i >= len(given) or lower else 1))
                         if free is None:                # nothing near it is clear of the mount: the view is left out
@@ -651,6 +676,60 @@ def review_body(first: dict, batch: list[dict], found: dict, shown: dict[int, di
     return {**first, "messages": [{"role": "user", "content": content}]}
 
 
+ASK_AT_ONCE = 6                 # questions that do not depend on each other are sent side by side
+TICK_S = 15.0                   # while answers are awaited, say so this often
+_wait = {"pending": 0, "since": 0.0, "round": 0}
+_wait_lock = threading.Lock()
+
+
+@contextlib.contextmanager
+def waiting(say=None):
+    """Around a request to the model: while any is open, a line every TICK_S seconds tells how many
+    answers are awaited and for how long, so a job that waits does not look like one that hangs."""
+    say = say or (lambda text: print(text, flush=True))
+    with _wait_lock:
+        _wait["pending"] += 1
+        if _wait["pending"] == 1:
+            _wait["since"] = time.time()
+            _wait["round"] += 1
+            mine = _wait["round"]
+
+            def tick() -> None:
+                while True:
+                    time.sleep(TICK_S)
+                    with _wait_lock:
+                        if _wait["pending"] == 0 or _wait["round"] != mine:
+                            return
+                        count, seconds = _wait["pending"], time.time() - _wait["since"]
+                    say(f"ai: waiting for {count} answer{'s' if count != 1 else ''} from the model ({seconds:.0f} s)")
+            threading.Thread(target=tick, daemon=True).start()
+    try:
+        yield
+    finally:
+        with _wait_lock:
+            _wait["pending"] -= 1
+
+
+def together(jobs: list, done=None, workers: int = ASK_AT_ONCE) -> list:
+    """The results of the calls in `jobs`, made side by side, in the order given. done(n, of) is
+    called as each one finishes. The first error is raised once all have ended."""
+    from concurrent.futures import ThreadPoolExecutor
+    count, lock = [0], threading.Lock()
+
+    def one(job):
+        try:
+            return job()
+        finally:
+            with lock:
+                count[0] += 1
+                if done:
+                    done(count[0], len(jobs))
+    if not jobs:
+        return []
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(jobs)))) as pool:
+        return list(pool.map(one, jobs))
+
+
 def poster():
     """post(body) -> the model's answer as text, through OpenRouter with the key from the environment or .env."""
     import httpx
@@ -658,8 +737,9 @@ def poster():
 
     def post(body: dict) -> str:
         try:
-            reply = httpx.post(OPENROUTER_URL, json=body, timeout=300,
-                               headers={"Authorization": f"Bearer {key}", "X-Title": "insta-roller"})
+            with waiting():
+                reply = httpx.post(OPENROUTER_URL, json=body, timeout=300,
+                                   headers={"Authorization": f"Bearer {key}", "X-Title": "insta-roller"})
         except httpx.HTTPError as error:
             raise Unavailable(f"OpenRouter cannot be reached ({type(error).__name__})") from None
         if reply.status_code != 200:
@@ -673,7 +753,8 @@ def poster():
 
 def choose_openrouter(items: list[dict], profile: Profile, mount: Mount, title: str, showy: bool,
                       fixed: list[tuple[str, bool]], post=None, log: Path | None = None,
-                      own_stills=None, elsewhere: list[str] | None = None) -> dict[int, tuple[list[str], str, dict, list[str]]]:
+                      own_stills=None, elsewhere: list[str] | None = None,
+                      progress=None) -> dict[int, tuple[list[str], str, dict, list[str]]]:
     """fixed: (description, shows the person) of the shots the model cannot change.
     own_stills(shot, views) renders the views the model aimed itself, for the review round.
     elsewhere: what the other reels of the same recording already show."""
@@ -687,6 +768,8 @@ def choose_openrouter(items: list[dict], profile: Profile, mount: Mount, title: 
     for i in range(0, len(items), BATCH):
         batch = items[i:i + BATCH]
         body = request_body(batch, profile, mount, title, showy, [text for text, _ in fixed], so_far, elsewhere)
+        if progress:
+            progress(f"ai: asking about {len(batch)} shots of {title}")
         reply = post(body)
         said.append(reply)
         found = parse_reply(reply, batch, profile, mount, showy, accents, person)
@@ -695,6 +778,8 @@ def choose_openrouter(items: list[dict], profile: Profile, mount: Mount, title: 
             by_index = {item["shot"].index: item["shot"] for item in batch}
             shown = {index: own_stills(by_index[index], own) for index, (_, _, own, _) in found.items() if own}
         if shown:                               # one more round with its own views in front of the model
+            if progress:
+                progress(f"ai: reviewing {len(shown)} shots with views of its own")
             try:
                 reply = post(review_body(body, batch, found, shown))
                 said.append(reply)
@@ -721,28 +806,81 @@ def choose_openrouter(items: list[dict], profile: Profile, mount: Mount, title: 
 
 # --- entry point --------------------------------------------------------------------------
 def blocked_zones(shots: list[Shot], scenes: list[Scene], profile: Profile, mount: Mount, ctx, folder: Path,
-                  post) -> dict[int, list[dict]]:
-    """Shot index -> the zones in the way at the camera position it was filmed from."""
+                  post, progress=None) -> dict[int, list[dict]]:
+    """Shot index -> the zones in the way at the camera position it was filmed from. The positions
+    do not depend on each other, so they are asked about side by side."""
     levels = getattr(ctx, "levels", None) or {}
     groups: dict[tuple, list[Scene]] = {}
     for scene in scenes:
         groups.setdefault((scene.recording, *blocked.position_key(levels.get(scene.id))), []).append(scene)
     by_id = {s.id: s for s in scenes}
-    found: dict[tuple, list[dict]] = {}
-    out = {}
-    for shot in shots:
+    keys: dict[int, tuple] = {}
+    jobs: dict[tuple, object] = {}
+    for n, shot in enumerate(shots):
         scene = by_id.get(shot.scene_id)
         if scene is None:
             continue
         key = (scene.recording, *blocked.position_key(levels.get(scene.id)))
-        if key not in found:
+        keys[n] = key
+        if key not in jobs:
             same = sorted(groups[key], key=lambda x: x.start_s)
             first, last = same[0], same[-1]
             moments = [first.start_s + 3, (first.start_s + last.end_s) / 2, last.end_s - 3]
-            found[key] = blocked.zones(ctx.recording(scene.recording), mount, levels.get(scene.id), moments,
-                                       profile.ai_framing.model, profile.kind, ctx.work, ctx.log, folder, post)
-        out[shot.index] = found[key]
-    return out
+            jobs[key] = (lambda scene=scene, moments=moments: blocked.zones(
+                ctx.recording(scene.recording), mount, levels.get(scene.id), moments,
+                profile.ai_framing.model, profile.kind, ctx.work, ctx.log, folder, post))
+    said = (lambda n, of: progress(f"  part {n}/{of}  zones")) if progress and len(jobs) > 1 else None
+    found = dict(zip(jobs, together(list(jobs.values()), said)))
+    return {shots[n].index: found[key] for n, key in keys.items()}
+
+
+def _themes(profile: Profile) -> list[Theme]:
+    themes = []
+    for name in profile.themes:
+        try:
+            themes.append(load_theme(name))
+        except OSError:
+            pass
+    return themes
+
+
+def _open(reel: ReelPlan, by_id: dict, profile: Profile, theme: Theme | None, mount: Mount, themes: list[Theme]) -> list[tuple]:
+    """(shot, the framings to choose among, the views to show, the showy ones) of every shot an engine decides."""
+    remote = profile.ai_framing.engine == "openrouter"
+    plans = []
+    for shot in reel.shots:
+        scene = by_id.get(shot.scene_id)
+        options = candidates(shot, scene, profile, theme, mount, themes)
+        names, extra = views(shot, scene, profile, theme, mount, themes) if remote else ([], set())
+        if len(options) > 1 or (remote and scene is not None and shot.type in profile.scene_types):
+            plans.append((shot, options, names, extra))
+    return plans
+
+
+def prepare(reels: list[tuple[ReelPlan, Theme | None]], scenes: list[Scene], profile: Profile, mount: Mount, ctx,
+            progress=print, post=None) -> None:
+    """Before the reels are framed one after another (each is told what the others show), do what
+    does not depend on that order for all of them at once: decode the moments the model will be
+    shown, and ask it what is in the way at every camera position. apply() then finds it all kept."""
+    if profile.ai_framing.engine != "openrouter" or not hasattr(ctx, "recording"):
+        return
+    from . import render
+    by_id, themes = {s.id: s for s in scenes}, _themes(profile)
+    shots = [shot for reel, theme in reels for shot, _, _, _ in _open(reel, by_id, profile, theme, mount, themes)]
+    if not shots:
+        return
+    folder = ctx.work / "ai_framing"
+    folder.mkdir(parents=True, exist_ok=True)
+    levels = getattr(ctx, "levels", None) or {}
+    try:
+        wanted = [(ctx.recording(shot.recording), shot.start_s + shot.duration_s * part, levels.get(shot.scene_id))
+                  for shot in shots for _, part in MOMENTS]
+        progress(f"plan: decoding {len(wanted)} moments of {len(shots)} shots for the model")
+        render.spheres(wanted, mount, ctx.work, ctx.log, progress=lambda n, of: progress(f"  part {n}/{of}  panorama"))
+        progress("plan: asking the model what is in the way of the camera")
+        blocked_zones(shots, scenes, profile, mount, ctx, folder, post or poster(), progress)
+    except (Unavailable, RuntimeError) as error:        # apply() meets the same trouble and says what follows from it
+        progress(f"ai framing: {str(error)[:200]}")
 
 
 def apply(reel: ReelPlan, scenes: list[Scene], profile: Profile, mount: Mount, theme: Theme | None, ctx,
@@ -753,20 +891,9 @@ def apply(reel: ReelPlan, scenes: list[Scene], profile: Profile, mount: Mount, t
     if cfg.engine == "off":
         return reel
     by_id = {s.id: s for s in scenes}
-    themes = []
-    for name in profile.themes:
-        try:
-            themes.append(load_theme(name))
-        except OSError:
-            pass
+    themes = _themes(profile)
     remote = cfg.engine == "openrouter"
-    plans = []
-    for shot in reel.shots:
-        scene = by_id.get(shot.scene_id)
-        options = candidates(shot, scene, profile, theme, mount, themes)
-        names, extra = views(shot, scene, profile, theme, mount, themes) if remote else ([], set())
-        if len(options) > 1 or (remote and scene is not None and shot.type in profile.scene_types):
-            plans.append((shot, options, names, extra))
+    plans = _open(reel, by_id, profile, theme, mount, themes)
     if not plans:
         return reel
     folder = ctx.work / "ai_framing"
@@ -781,8 +908,13 @@ def apply(reel: ReelPlan, scenes: list[Scene], profile: Profile, mount: Mount, t
     else:
         try:
             if remote:
+                from . import render                    # every moment the model will be shown, decoded side by side
+                levels = getattr(ctx, "levels", None) or {}
+                if hasattr(ctx, "recording"):
+                    render.spheres([(ctx.recording(shot.recording), shot.start_s + shot.duration_s * part, levels.get(shot.scene_id))
+                                    for shot, _, _, _ in plans for _, part in MOMENTS], mount, ctx.work, ctx.log)
                 ask = post or poster()
-                zones = blocked_zones([shot for shot, _, _, _ in plans], scenes, profile, mount, ctx, folder, ask)
+                zones = blocked_zones([shot for shot, _, _, _ in plans], scenes, profile, mount, ctx, folder, ask, progress)
                 tele = getattr(ctx, "telemetry", None)      # the flight log, for views held on the world
                 world = bool(tele and tele.samples and tele.samples[0].heading_deg is not None)
                 items = [{"shot": shot, "names": names, "extra": extra, "stills": _stills(shot, names, ctx, folder),
@@ -804,7 +936,7 @@ def apply(reel: ReelPlan, scenes: list[Scene], profile: Profile, mount: Mount, t
                          for s in reel.shots if s.index not in open_ids]
                 chosen = choose_openrouter(items, profile, mount, reel.title or reel.theme, showy, fixed, ask,
                                            folder / f"{key}.reply.txt",
-                                           lambda shot, own: _own_stills(shot, own, ctx, folder), elsewhere)
+                                           lambda shot, own: _own_stills(shot, own, ctx, folder), elsewhere, progress)
             else:
                 items = [(shot, options, _stills(shot, sorted({n for o in options for n in o}), ctx, folder))
                          for shot, options, _, _ in plans]

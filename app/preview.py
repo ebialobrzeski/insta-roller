@@ -42,6 +42,8 @@ def previews(job) -> None:
     def shot_of(item: dict) -> Shot:
         return Shot.model_validate({"index": 1, "type": "", "framing": [], **item["shot"]})
 
+    render.spheres([(ctx.recording(shot_of(item).recording), item["at"], (ctx.levels or {}).get(shot_of(item).scene_id))
+                    for item in spec.get("stills", [])], job.mount, job.work, job.log)
     for item in spec.get("stills", []):
         target = folder / item["file"]
         try:

@@ -5,7 +5,9 @@ reset_rot=1 makes each angle command absolute instead of cumulative.
 """
 from __future__ import annotations
 
+import os
 import shutil
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -63,12 +65,26 @@ def flat_filter(first: Keyframe | Preset, width: int, height: int, projection: s
             f":yaw={_wrap(first.yaw):.4f}:pitch={first.pitch:g}:roll={_wrap(first.roll):g}:reset_rot=1:interp=cubic")
 
 
-def encoder_args(encoder: str) -> list[str]:
-    if encoder == "auto":
-        encoder = "h264_nvenc" if ffmpeg.has_encoder("h264_nvenc") else "libx264"
+def encoder_args(encoder: str, export=None) -> list[str]:
+    """FFmpeg arguments for the video stream. encoder: auto (the graphics card when it can), gpu, cpu,
+    or an encoder's own name; export: codec, quality or bitrate (config.Export)."""
+    from .config import Export
+    export = export or Export()
+    gpu, cpu = ("hevc_nvenc", "libx265") if export.codec == "hevc" else ("h264_nvenc", "libx264")
+    if encoder in ("auto", "gpu"):
+        encoder = gpu if ffmpeg.has_encoder(gpu) else cpu
+    elif encoder == "cpu":
+        encoder = cpu
+    elif export.codec == "hevc" and "264" in encoder:           # a named H.264 encoder, but H.265 was asked for
+        encoder = gpu if "nvenc" in encoder and ffmpeg.has_encoder(gpu) else cpu
+    rate = []
+    if export.bitrate_mbps > 0:
+        mbps = export.bitrate_mbps
+        rate = ["-b:v", f"{mbps:g}M", "-maxrate", f"{mbps * 1.5:g}M", "-bufsize", f"{mbps * 2:g}M"]
+    tag = ["-tag:v", "hvc1"] if "265" in encoder or "hevc" in encoder else []       # so Apple players open it
     if encoder.endswith("_nvenc"):
-        return ["-c:v", encoder, "-preset", "p5", "-rc", "vbr", "-cq", "21", "-b:v", "0"]
-    return ["-c:v", encoder, "-preset", "medium", "-crf", "19"]
+        return ["-c:v", encoder, "-preset", "p5", "-rc", "vbr", *(rate or ["-cq", str(export.quality), "-b:v", "0"]), *tag]
+    return ["-c:v", encoder, "-preset", "medium", *(rate or ["-crf", str(max(export.quality - 2, 0))]), *tag]
 
 
 @dataclass
@@ -114,7 +130,7 @@ def render_shot(shot: FramedShot, plan: FramingPlan, ctx: Context, handles_s: fl
         cal = ctx.mount.calibration.get("sdk")
         rec = ctx.stitcher.segment(rec.variant("insv"), shot.start_s, shot.duration_s, ctx.log,
                                    cal.stabilize if cal else "none", cal.width if cal else None)
-        start = 0.0
+        start = rec.lead_s
     else:
         rec = rec if ctx.source == "proxy" else rec.best()
     source = rec.source_graph(ctx.mount, level)
@@ -127,7 +143,7 @@ def render_shot(shot: FramedShot, plan: FramingPlan, ctx: Context, handles_s: fl
     audio = profile.audio
     live_audio = audio and shot.speed == 1.0 and ffmpeg.probe(rec.files[0]).audio
     key = fingerprint(shot.model_dump_json(exclude={"index"}), plan.width, plan.height, plan.fps,
-                      profile.encoder, source, rec.id, *rec.files, with_ev, audio, profile.audio_fade_s,
+                      profile.encoder, profile.export.model_dump_json(), source, rec.id, *rec.files, with_ev, audio, profile.audio_fade_s,
                       fingerprint(frames) if frames else "", profile.safe_zone.model_dump_json() if frames else "")
     out = shots_dir / f"{key}.mp4"
     if out.exists():
@@ -167,20 +183,43 @@ def render_shot(shot: FramedShot, plan: FramingPlan, ctx: Context, handles_s: fl
                       f"afade=t=out:st={out_s - fade:.3f}:d={fade:.3f}[a]")
         else:                               # sped-up or silent source: keep the track, but quiet
             graph += f";anullsrc=r=48000:cl=stereo,atrim=duration={out_s:.3f}[a]"
-        maps += ["-map", "[a]", "-c:a", "aac", "-b:a", "160k"]
+        maps += ["-map", "[a]", "-c:a", "aac", "-b:a", f"{profile.export.audio_kbps}k"]
     tmp = shots_dir / f"{key}.part.mp4"
     ffmpeg.run([*inputs, "-filter_complex", graph, *maps, "-r", f"{plan.fps:g}", "-t", f"{out_s:.3f}",
-                *encoder_args(profile.encoder), tmp.name],
+                *encoder_args(profile.encoder, profile.export), tmp.name],
                log=ctx.log, cwd=shots_dir, stdin=frames or None)
     tmp.replace(out)
     return out
 
 
-def render_reel(plan: FramingPlan, ctx: Context, out: Path, progress=print) -> Path:
-    parts = []
+def _stitch_ahead(plan: FramingPlan, ctx: Context) -> None:
+    """Tell the stitcher every span the reel needs, so that shots of one clip share a stitch."""
+    if ctx.stitcher is None or ctx.source == "proxy":
+        return
     for shot in plan.shots:
-        progress(f"  shot {shot.index}/{len(plan.shots)}  {shot.scene_id}  {shot.duration_s / shot.speed:.1f}s")
-        parts.append(render_shot(shot, plan, ctx))
+        rec = ctx.recording(shot.recording)
+        if "insv" in (rec.kind, *rec.alt):
+            ctx.stitcher.want(rec.variant("insv"), shot.start_s, shot.duration_s)
+
+
+SHOTS_AT_ONCE = 2           # stitching loads the graphics card and framing the processor: two shots overlap the two
+
+
+def render_reel(plan: FramingPlan, ctx: Context, out: Path, progress=print) -> Path:
+    from concurrent.futures import ThreadPoolExecutor
+    _stitch_ahead(plan, ctx)
+    done, count = 0, threading.Lock()
+
+    def one(shot: FramedShot) -> Path:
+        nonlocal done
+        progress(f"render: starting {shot.scene_id}")
+        part = render_shot(shot, plan, ctx)
+        with count:
+            done += 1
+            progress(f"  shot {done}/{len(plan.shots)}  {shot.scene_id}  {shot.duration_s / shot.speed:.1f}s")
+        return part
+    with ThreadPoolExecutor(max_workers=SHOTS_AT_ONCE) as pool:
+        parts = list(pool.map(one, plan.shots))             # in reel order, whichever finished first
     listing = ctx.work / f"join_{out.stem}.txt"
     listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in parts), encoding="utf-8")
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -221,19 +260,77 @@ def zone_boxes(zone: SafeZone, width: int, height: int) -> list[str]:
     return boxes
 
 
+SPHERE_W = 2560             # width of the sphere kept for stills: plenty for thumbnails and for a model to look at
+
+
+def sphere(rec: Recording, mount: Mount, at_s: float, work: Path, log: Path,
+           level: tuple[float, float] | None = None) -> Path:
+    """The whole sphere at one moment as a picture, in the frame the views are aimed in. Kept on
+    disk: the costly part (decoding 8K, stitching two lenses) is done once per moment, and every
+    view of that moment is then cut from the picture in a few hundredths of a second."""
+    folder = work / "spheres"
+    path = folder / f"{fingerprint(rec.id, rec.kind, *rec.files, round(at_s, 1), level, mount.model_dump_json(include={'calibration'}), SPHERE_W)}.jpg"
+    if path.exists():
+        return path
+    folder.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.part.jpg")
+    graph = f"{rec.source_graph(mount, level, SPHERE_W)};{EQ}null[v]"
+    for quick in (True, False):                     # without the graphics card when it refuses the file
+        try:
+            ffmpeg.run([*rec.input_args(work, at_s, still=quick), "-frames:v", "1", "-filter_complex", graph,
+                        "-map", "[v]", "-q:v", "2", str(tmp)], log=log)
+            break
+        except RuntimeError:
+            if not quick:
+                raise
+    tmp.replace(path)
+    return path
+
+
+def spheres(wanted: list[tuple[Recording, float, tuple | None]], mount: Mount, work: Path, log: Path,
+            workers: int | None = None, progress=None) -> None:
+    """Make the spheres of many moments at once: several decodes run side by side, so the
+    processor and the graphics card are both used. Moments that fail are left for later."""
+    from concurrent.futures import ThreadPoolExecutor
+    seen, todo = set(), []
+    for rec, at, level in wanted:
+        key = (rec.id, rec.kind, round(at, 1), tuple(level) if level else None)
+        if key not in seen:
+            seen.add(key)
+            todo.append((rec, at, tuple(level) if level else None))
+    if not todo:
+        return
+    workers = workers or max(2, min(6, (os.cpu_count() or 4) // 2))
+
+    done, count = [0], threading.Lock()
+
+    def one(item) -> None:
+        try:
+            sphere(item[0], mount, item[1], work, log, item[2])
+        except RuntimeError:
+            pass
+        with count:
+            done[0] += 1
+            if progress:
+                progress(done[0], len(todo))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(one, todo))
+
+
 def still(rec: Recording, mount: Mount, at_s: float, view: Keyframe | Preset, size: tuple[int, int],
           out: Path, work: Path, log: Path, zone: SafeZone | None = None, label: str = "",
           level: tuple[float, float] | None = None, projection: str = "flat") -> Path:
-    """One flat frame of the recording, for previews and scene thumbnails."""
+    """One frame of the recording seen through a view, for previews, thumbnails and the AI.
+    Cut from the kept sphere of that moment (see sphere)."""
     out.parent.mkdir(parents=True, exist_ok=True)
+    source = sphere(rec, mount, at_s, work, log, tuple(level) if level else None)
     chain = [flat_filter(view, *size, projection)] + (zone_boxes(zone, *size) if zone else [])
     labelled = chain + [f"drawtext=text='{label}':x=20:y=20:fontsize={size[1] // 24}:fontcolor=white"
                         ":box=1:boxcolor=black@0.5"]
     for attempt in ([labelled, chain] if label else [chain]):
         try:
-            ffmpeg.run([*rec.input_args(work, at_s), "-frames:v", "1", "-filter_complex",
-                        f"{rec.source_graph(mount, level)};{EQ}{','.join(attempt)}[v]", "-map", "[v]",
-                        "-q:v", "3", str(out)], log=log)
+            ffmpeg.run(["-i", str(source), "-frames:v", "1", "-filter_complex", f"[0:v]null{EQ};{EQ}{','.join(attempt)}[v]",
+                        "-map", "[v]", "-q:v", "3", str(out)], log=log)
             return out
         except RuntimeError:                # no font available for the label
             if attempt is chain:

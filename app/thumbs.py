@@ -36,6 +36,8 @@ def thumbnails(job) -> None:
             old.unlink()
     stamp.write_text(scenes.fingerprint)
 
+    render.spheres([(recordings.get(scene.recording, main), (scene.start_s + scene.end_s) / 2, levels.get(scene.id))
+                    for scene in scenes.scenes if not (folder / f"{scene.id}.jpg").exists()], mount, job.work, job.log)
     failed = 0
     for i, scene in enumerate(scenes.scenes, 1):
         out = folder / f"{scene.id}.jpg"

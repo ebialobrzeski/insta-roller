@@ -186,7 +186,7 @@ of the shot.
   sentences in `ai_framing.good` / `bad`; a framing the reel already used
   loses `variety`. Needs `pip install -e ".[ai]"`. Nothing leaves the PC.
 - `openrouter`: a vision model (`ai_framing.model`, default
-  `anthropic/claude-sonnet-5.5`) directs the reel. It is told the footage is a
+  `anthropic/claude-haiku-5.5`) directs the reel. It is told the footage is a
   full 360 sphere and gets, for every shot, the whole sphere as a panorama
   with a grid of angles plus the ready-made views. It aims the camera itself:
   any yaw, pitch and field of view, a slow zoom or pan, a projection, one to

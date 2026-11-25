@@ -120,7 +120,9 @@ def analyze(job) -> Scenes:
     profile, cfg = job.profile, job.profile.holiday
     recordings = job.recordings
     fp = fingerprint(*[f for r in recordings for f in r.files], cfg.model_dump_json(),
-                     {k: v.base_score for k, v in profile.scene_types.items()}, sorted(profile.people), 2)
+                     {k: v.base_score for k, v in profile.scene_types.items()}, sorted(profile.people),
+                     profile.ai_framing.model_dump_json(include={"scout", "scout_every_holiday_s", "scout_max", "model"})
+                     if profile.ai_framing.scout and profile.ai_framing.engine == "openrouter" else "", 3)
     path = job.path("scenes.json")
     if path.exists() and not job.args.force:
         cached = contracts.read(path, Scenes)
@@ -141,6 +143,14 @@ def analyze(job) -> Scenes:
         kinds = ", ".join(f"{s.type} {s.end_s - s.start_s:.0f}s" for s in found) or "nothing usable"
         lines.append(f"  {day}  {rec.id}  {rec.duration_s:>6.1f}s  {kinds}")
     annotate_people(job, {r.id: r for r in recordings}, scenes)
+    if profile.ai_framing.scout and profile.ai_framing.engine == "openrouter" and scenes:
+        from . import aiframe, scout                # a model looks through the clips for landmarks and views
+        print("analyze: looking through the clips for landmarks", flush=True)
+        try:
+            sights = scout.scout_clips({r.id: r for r in recordings}, job.mount, profile, scenes, job.work, job.log)
+            scenes = sorted(scenes + sights, key=lambda s: (s.recording, s.start_s))
+        except (aiframe.Unavailable, RuntimeError) as error:
+            print(f"scout: {error}; no landmarks were looked for")
     result = Scenes(fingerprint=fp, recording=infos[0], recordings=infos, source="holiday",
                     sync=Sync(video_start_utc=recordings[0].start_utc or 0.0, offset_s=0.0, method="camera clock"),
                     missing_phases=[], scenes=scenes)
@@ -317,6 +327,9 @@ def _views(rec: Recording, mount, t: float, level, work, log):
             graph += (f";[e{i}]v360=input=e:output=flat:w={SCAN_SIZE}:h={SCAN_SIZE}:d_fov={SCAN_FOV:g}"
                       f":yaw={yaw}:pitch=0[v{i}]")
             maps += ["-map", f"[v{i}]", "-frames:v", "1", "-q:v", "3", str(outs[i])]
-        ffmpeg.run([*rec.input_args(work, t), "-filter_complex", graph, *maps], log=log)
+        try:                                    # the nearest keyframe, decoded on the graphics card
+            ffmpeg.run([*rec.input_args(work, t, still=True), "-filter_complex", graph, *maps], log=log)
+        except RuntimeError:
+            ffmpeg.run([*rec.input_args(work, t), "-filter_complex", graph, *maps], log=log)
     for out, yaw in zip(outs, SCAN_YAWS):
         yield t, str(out), float(yaw), 0.0, SCAN_FOV

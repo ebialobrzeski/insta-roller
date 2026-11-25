@@ -1,9 +1,9 @@
 # One film per day (or one of the whole trip), clips in the order they were shot.
 name: holiday_day
 title: Dzień
-include: [view, walk, holder, companion, panorama]
+include: [view, walk, holder, companion, panorama, sight]
 # Shots of the person holding the camera: a few per film, not most of it.
-max_per_type: {holder: 2}
+max_per_type: {holder: 2, sight: 5}
 # Shots of one kind are not all framed alike: they take these in turn.
 variants:
   view:   [[view], [view_in], [view_out]]

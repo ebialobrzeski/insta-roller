@@ -37,3 +37,5 @@ scene_types:
   holder:    {weight: 1.0, base_score: 0.7, min_shot_s: 4, max_shot_s: 12, anchor: center, framing: [holder]}
   companion: {weight: 1.0, base_score: 0.8, min_shot_s: 4, max_shot_s: 14, anchor: center, framing: [companion]}
   panorama:  {weight: 0.9, base_score: 0.7, min_shot_s: 6, max_shot_s: 16, anchor: center, framing: [panorama]}
+  # A moment a vision model picked for the place itself: a landmark, a view (ai_framing.scout).
+  sight:     {weight: 1.3, base_score: 0.85, min_shot_s: 4, max_shot_s: 9, anchor: center, framing: [sight]}
