@@ -306,6 +306,58 @@ def step_analyze(job: Job) -> Scenes:
     return result
 
 
+def _shows(reel: ReelPlan) -> str:
+    """What a framed reel shows, in the words the model is told about the other reels."""
+    return f"{reel.title or reel.theme}: " + ", ".join(
+        " -> ".join(n if n not in (s.attrs.get("views") or {}) else
+                    f"own view yaw {s.attrs['views'][n]['yaw']:.0f} pitch {s.attrs['views'][n]['pitch']:.0f}" for n in s.framing)
+        + (" + split frame" if s.second else "") for s in reel.shots)
+
+
+def frame_reels(reels: list[tuple[str, ReelPlan, object]], scenes, profile, mount, ctx,
+                apply=None, workers: int | None = None) -> dict[str, ReelPlan]:
+    """Tag -> the reel framed by the model. Each reel is told what the earlier reels made from the
+    same recordings show, so it looks different from them; it waits for those reels' first answers
+    and no others. Reels of different footage (the days of a holiday) are framed side by side."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from . import aiframe
+    apply = apply or aiframe.apply
+    if workers is None:                         # a model on this PC is asked one reel at a time
+        workers = aiframe.ASK_AT_ONCE if profile.ai_framing.engine == "openrouter" else 1
+    footage = [{s.recording for s in reel.shots} for _, reel, _ in reels]
+    after = [[i for i in range(j) if footage[i] & footage[j]] for j in range(len(reels))]
+    ready = [threading.Event() for _ in reels]
+    shows: list[str | None] = [None] * len(reels)
+    done, lock = [0], threading.Lock()
+
+    def one(j: int) -> ReelPlan:
+        tag, reel, theme = reels[j]
+        try:
+            for i in after[j]:
+                ready[i].wait()
+
+            def drafted(framed: ReelPlan) -> None:
+                shows[j] = _shows(framed)
+                ready[j].set()
+            return apply(reel, scenes, profile, mount, theme, ctx, progress=lambda text: print(text, flush=True),
+                         elsewhere=[shows[i] for i in after[j] if shows[i]], drafted=drafted)
+        finally:
+            ready[j].set()
+            with lock:
+                done[0] += 1
+                if len(reels) > 1:
+                    print(f"  part {done[0]}/{len(reels)}  reel {tag}", flush=True)
+    if not reels:
+        return {}
+    if len(reels) > 1:
+        print(f"plan: framing {len(reels)} reels with the model", flush=True)
+    # Submitted in order, so a reel only ever waits for reels that already run or are done.
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(reels)))) as pool:
+        framed = list(pool.map(one, range(len(reels))))
+    return {tag: reel for (tag, _, _), reel in zip(reels, framed)}
+
+
 def step_plan(job: Job) -> list[FramingPlan]:
     scenes_path = job.path("scenes.json")
     if not scenes_path.exists():
@@ -333,7 +385,6 @@ def step_plan(job: Job) -> list[FramingPlan]:
     framings = []
     ai_ctx = job.context(scenes) if job.profile.ai_framing.engine != "off" else None
     themes = {t.name: t for t in job.themes}
-    shown: list[str] = []                       # what the reels planned so far show, for the AI
     planned = list(zip(plans, [e for e in entries if e.status == "planned"]))
     print(f"plan: {len(planned)} reels to lay out", flush=True)
 
@@ -355,10 +406,9 @@ def step_plan(job: Job) -> list[FramingPlan]:
             fresh.append((reel, theme_of(reel)))
         aiframe.prepare(fresh, scenes.scenes, job.profile, job.mount, ai_ctx,
                         progress=lambda text: print(text, flush=True))
-    for number, (reel, entry) in enumerate(planned, 1):
-        print(f"plan: reel {number}/{len(planned)}: {entry.tag}", flush=True)
+    kept = []                                   # (entry, the reel to frame)
+    for reel, entry in planned:
         reel_path = job.path(f"reel_plan_{entry.tag}.json")
-        framing_path = job.path(f"framing_plan_{entry.tag}.json")
         # A reel plan edited by hand (or in the scene review) is kept as it is.
         if reel_path.exists() and not job.args.force:
             old = contracts.read(reel_path, ReelPlan)
@@ -369,13 +419,15 @@ def step_plan(job: Job) -> list[FramingPlan]:
             if old.edited:
                 reel = old
                 entry.length_s, entry.shots = reel.length_s, len(reel.shots)
-        if ai_ctx is not None and not reel.edited:      # a model chooses among the possible framings
-            reel = aiframe.apply(reel, scenes.scenes, job.profile, job.mount, theme_of(reel), ai_ctx,
-                                 progress=lambda text: print(text, flush=True), elsewhere=list(shown))
-            shown += [f"{reel.title or reel.theme}: " + ", ".join(
-                " -> ".join(n if n not in (s.attrs.get("views") or {}) else
-                            f"own view yaw {s.attrs['views'][n]['yaw']:.0f} pitch {s.attrs['views'][n]['pitch']:.0f}" for n in s.framing)
-                + (" + split frame" if s.second else "") for s in reel.shots)]
+        kept.append((entry, reel))
+    if ai_ctx is not None:                      # a model chooses among the possible framings
+        framed = frame_reels([(entry.tag, reel, theme_of(reel)) for entry, reel in kept if not reel.edited],
+                             scenes.scenes, job.profile, job.mount, ai_ctx)
+        kept = [(entry, framed.get(entry.tag, reel)) for entry, reel in kept]
+    for number, (entry, reel) in enumerate(kept, 1):
+        print(f"plan: reel {number}/{len(kept)}: {entry.tag}", flush=True)
+        reel_path = job.path(f"reel_plan_{entry.tag}.json")
+        framing_path = job.path(f"framing_plan_{entry.tag}.json")
         framing = plan_framing(reel, job.profile, job.mount, tele, calibration)
         # An unchanged reel plan keeps its framing plan, so manual edits survive.
         if framing_path.exists() and not job.args.force:

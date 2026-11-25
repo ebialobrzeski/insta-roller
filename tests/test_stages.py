@@ -811,6 +811,35 @@ def test_spans_are_stitched_as_short_videos_not_frame_by_frame(tmp_path, monkeyp
     assert "--start-ms" in runs[-1][1] and late.lead_s == 0.0 and len(runs) == 4
 
 
+def test_reels_of_other_footage_are_framed_side_by_side(profile, mount):
+    """A reel is told only what the earlier reels of the same recordings show, and waits only for
+    their first answers: reels of other days are framed at the same time."""
+    import threading
+    from core import cli
+
+    def reel(name, rec):
+        return ReelPlan(theme=name, title=name, target_length_s=4, length_s=4, shots=[
+            Shot(index=1, scene_id="s", type="glide", start_s=0, duration_s=4, framing=["front"], recording=rec)])
+    reels = [("day1", reel("day1", "r1"), None), ("day2", reel("day2", "r2"), None), ("trip", reel("trip", "r1"), None)]
+    both, lock, told, review = threading.Barrier(2, timeout=5), threading.Lock(), {}, threading.Event()
+
+    def apply(reel, scenes, profile, mount, theme, ctx, progress, elsewhere, drafted):
+        with lock:
+            told[reel.title] = list(elsewhere)
+        if reel.title in ("day1", "day2"):
+            both.wait()                             # passes only when the two days are asked at once
+        framed = reel.model_copy(update={"shots": [reel.shots[0].model_copy(update={"framing": [f"{reel.title}_view"]})]})
+        drafted(framed)                             # the first answer is in; the review round follows
+        if reel.title == "day1":
+            assert review.wait(5), "the trip reel waited for day 1's review round"
+        if reel.title == "trip":
+            review.set()
+        return framed
+    framed = cli.frame_reels(reels, [], profile, mount, None, apply=apply, workers=3)
+    assert told == {"day1": [], "day2": [], "trip": ["day1: day1_view"]}
+    assert [framed[t].shots[0].framing for t in ("day1", "day2", "trip")] == [["day1_view"], ["day2_view"], ["trip_view"]]
+
+
 def test_questions_that_do_not_depend_on_each_other_are_asked_side_by_side(monkeypatch):
     import threading
     import time

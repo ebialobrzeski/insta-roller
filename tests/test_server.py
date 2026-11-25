@@ -327,7 +327,8 @@ def test_custom_output_folder_goes_to_the_cli_as_out(env):
 
     fake = FakeCli()
     env.runner(fake, python="py").run_once()
-    assert fake.last == ["py", "-u", "-m", "app.thumbs", str(env.lot1), f"--out={out}", f"--profile={out / 'job_profile.yaml'}"]
+    assert fake.cmds["thumbnails"] == ["py", "-u", "-m", "app.thumbs", str(env.lot1), f"--out={out}",
+                                       f"--profile={out / 'job_profile.yaml'}"]
     fill_output(out)                                                 # review and results read the chosen folder
     (out / "reel_thermal_30s.mp4").write_bytes(b"film")
     url = f"/api/jobs/{job['id']}"
@@ -475,12 +476,13 @@ class FakeCli:
     """Stands in for the subprocess runner: records the commands, plays back output."""
 
     def __init__(self, fail: dict | None = None, die_at: str | None = None, at: dict | None = None):
-        self.calls, self.fail, self.die_at, self.at = [], fail or {}, die_at, at or {}
+        self.calls, self.fail, self.die_at, self.at, self.cmds = [], fail or {}, die_at, at or {}, {}
 
     def __call__(self, cmd, on_line, poll) -> int:
         step = cmd[4] if cmd[3] == "core.cli" else "thumbnails"
         self.calls.append(step)
         self.last = cmd
+        self.cmds[step] = cmd
         if step == self.die_at:
             self.die_at = None
             raise KeyboardInterrupt("the app was killed")
@@ -525,10 +527,38 @@ def test_background_runner_takes_jobs_from_queued_to_done(env):
         assert wait_for(lambda: env.job(first["id"])["status"] == "done")
         second = env.submit(env.lot2, review=True)       # queued while the app is running
         assert wait_for(lambda: env.job(second["id"])["status"] == "review")
-        assert fake.calls == ["analyze", "plan", "render", "analyze", "plan", "thumbnails"]
+        assert fake.calls[:4] == ["analyze", "plan", "render", "analyze"]
+        assert sorted(fake.calls[4:]) == ["plan", "thumbnails"]     # the thumbnails are made alongside the plan
     finally:
         runner.stop()
     assert not runner.thread.is_alive()
+
+
+def test_thumbnails_are_made_while_the_plan_runs(env):
+    """The plan mostly waits for the model: the scene thumbnails, which need only the scenes, are
+    made meanwhile. Their progress stays out of the plan's activity line until the plan is done."""
+    import threading
+    job = env.submit(profile="flight", review=True)
+    started, order = threading.Event(), []
+
+    def fake(cmd, on_line, poll) -> int:
+        step = cmd[4] if cmd[3] == "core.cli" else "thumbnails"
+        if step == "plan":
+            assert started.wait(5), "the thumbnails did not start while the plan was running"
+            on_line("plan: done")
+            order.append("plan")
+        elif step == "thumbnails":
+            started.set()
+            on_line("  shot 1/2  scene")
+            on_line("thumbnails: 2 of 2")
+            order.append("thumbnails")
+        return 0
+    env.runner(fake, python="py").run_once()
+    seen = env.job(job["id"])
+    assert seen["status"] == "review"
+    log = seen["log"]
+    assert "thumbnails: started alongside" in log and "thumbnails: 2 of 2" in log
+    assert "shot 1/2" not in log.rpartition("$ py -u -m app.thumbs")[0]     # not shown as the plan's progress
 
 
 def test_job_resumes_at_its_step_after_the_app_restarts(env):
@@ -536,7 +566,7 @@ def test_job_resumes_at_its_step_after_the_app_restarts(env):
     first = FakeCli(die_at="plan")
     with pytest.raises(KeyboardInterrupt):               # killed in the middle of "plan"
         env.runner(first).run_once()
-    assert first.calls == ["analyze", "plan"]
+    assert first.calls[0] == "analyze" and "plan" in first.calls
     assert (env.job()["status"], env.job()["stage"]) == ("running", "plan")
 
     env.start()                                          # the app again, on the same data folder
@@ -547,7 +577,7 @@ def test_job_resumes_at_its_step_after_the_app_restarts(env):
         assert wait_for(lambda: env.job()["status"] == "review")
     finally:
         runner.stop()
-    assert second.calls == ["plan", "thumbnails"]        # analyze is not repeated; failed thumbnails do not matter
+    assert sorted(second.calls) == ["plan", "thumbnails"]    # analyze is not repeated; failed thumbnails do not matter
 
     fill_output(env.lot1 / "insta-roller")
     env.client.post(f"/api/jobs/{job['id']}/render")

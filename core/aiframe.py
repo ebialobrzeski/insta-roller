@@ -754,10 +754,12 @@ def poster():
 def choose_openrouter(items: list[dict], profile: Profile, mount: Mount, title: str, showy: bool,
                       fixed: list[tuple[str, bool]], post=None, log: Path | None = None,
                       own_stills=None, elsewhere: list[str] | None = None,
-                      progress=None) -> dict[int, tuple[list[str], str, dict, list[str]]]:
+                      progress=None, drafted=None) -> dict[int, tuple[list[str], str, dict, list[str]]]:
     """fixed: (description, shows the person) of the shots the model cannot change.
     own_stills(shot, views) renders the views the model aimed itself, for the review round.
-    elsewhere: what the other reels of the same recording already show."""
+    elsewhere: what the other reels of the same recording already show.
+    drafted(chosen) gets the model's first answer for every shot, before the review round of the
+    last batch: enough for the reels waiting to hear what this one shows."""
     post = post or poster()
     cfg = profile.ai_framing
     out: dict[int, tuple[list[str], str, dict]] = {}
@@ -773,6 +775,9 @@ def choose_openrouter(items: list[dict], profile: Profile, mount: Mount, title: 
         reply = post(body)
         said.append(reply)
         found = parse_reply(reply, batch, profile, mount, showy, accents, person)
+        if drafted is not None and i + BATCH >= len(items):
+            drafted({**out, **{k: (path, f"{cfg.model}: {why}", own, second)
+                               for k, (path, why, own, second) in found.items()}})
         shown = {}
         if own_stills is not None:
             by_index = {item["shot"].index: item["shot"] for item in batch}
@@ -884,9 +889,48 @@ def prepare(reels: list[tuple[ReelPlan, Theme | None]], scenes: list[Scene], pro
 
 
 def apply(reel: ReelPlan, scenes: list[Scene], profile: Profile, mount: Mount, theme: Theme | None, ctx,
-          progress=print, post=None, elsewhere: list[str] | None = None) -> ReelPlan:
+          progress=print, post=None, elsewhere: list[str] | None = None, drafted=None) -> ReelPlan:
     """The reel with the framing of its shots chosen by the engine in profile.ai_framing.
-    elsewhere: what the other reels of this recording already show, so this one looks different."""
+    elsewhere: what the other reels of this recording already show, so this one looks different.
+    drafted(reel) is called once, as early as what the reel shows is known: with the model's first
+    answer, before its review round. Reels that must look different from this one start from it."""
+    sent = []
+
+    def draft(framed: ReelPlan) -> None:
+        if not sent:
+            sent.append(framed)
+            if drafted is not None:
+                drafted(framed)
+    try:
+        result = _apply(reel, scenes, profile, mount, theme, ctx, progress, post, elsewhere, draft)
+    except BaseException:
+        draft(reel)                             # whoever waits for this reel is not left waiting
+        raise
+    draft(result)
+    return result
+
+
+def _framed(reel: ReelPlan, chosen: dict) -> ReelPlan:
+    """The reel with the framings in `chosen` (shot index -> (path, why, own views, second))."""
+    shots = []
+    for shot in reel.shots:
+        if shot.index in chosen:
+            names, why, own, second = chosen[shot.index]
+            attrs = {**shot.attrs, "ai": why}
+            if own:
+                attrs["views"] = own            # the views the model aimed itself, used by plan_framing
+            shot = shot.model_copy(update={"framing": list(names), "second": list(second), "attrs": attrs})
+        shots.append(shot)
+    return reel.model_copy(update={"shots": shots})
+
+
+def _load_chosen(path: Path) -> dict:
+    return {int(k): (v[0], v[1], v[2] if len(v) > 2 else {}, v[3] if len(v) > 3 else [])
+            for k, v in json.loads(path.read_text(encoding="utf-8")).items()}
+
+
+def _apply(reel: ReelPlan, scenes: list[Scene], profile: Profile, mount: Mount, theme: Theme | None, ctx,
+           progress, post, elsewhere: list[str] | None, draft) -> ReelPlan:
     cfg = profile.ai_framing
     if cfg.engine == "off":
         return reel
@@ -902,9 +946,12 @@ def apply(reel: ReelPlan, scenes: list[Scene], profile: Profile, mount: Mount, t
                       json.dumps([[s.scene_id, s.start_s, s.duration_s, s.speed, s.attrs, o, n, sorted(e)]
                                   for s, o, n, e in plans], sort_keys=True))
     cache = folder / f"{key}.json"
+    first_cache = folder / f"{key}.draft.json"  # the first answer: what reels after this one were told
+    first: dict = {}
     if cache.exists():
-        chosen = {int(k): (v[0], v[1], v[2] if len(v) > 2 else {}, v[3] if len(v) > 3 else [])
-                  for k, v in json.loads(cache.read_text(encoding="utf-8")).items()}
+        chosen = _load_chosen(cache)
+        if first_cache.exists():
+            draft(_framed(reel, _load_chosen(first_cache)))
     else:
         try:
             if remote:
@@ -934,9 +981,13 @@ def apply(reel: ReelPlan, scenes: list[Scene], profile: Profile, mount: Mount, t
                 fixed = [(f"shot {s.index} ({s.type}): " + " -> ".join(s.framing),
                           any(shows_person(mount.presets[n], mount) for n in s.framing if n in mount.presets))
                          for s in reel.shots if s.index not in open_ids]
+                def drafted(found: dict) -> None:
+                    first.update(found)
+                    draft(_framed(reel, found))
                 chosen = choose_openrouter(items, profile, mount, reel.title or reel.theme, showy, fixed, ask,
                                            folder / f"{key}.reply.txt",
-                                           lambda shot, own: _own_stills(shot, own, ctx, folder), elsewhere, progress)
+                                           lambda shot, own: _own_stills(shot, own, ctx, folder), elsewhere, progress,
+                                           drafted)
             else:
                 items = [(shot, options, _stills(shot, sorted({n for o in options for n in o}), ctx, folder))
                          for shot, options, _, _ in plans]
@@ -944,14 +995,7 @@ def apply(reel: ReelPlan, scenes: list[Scene], profile: Profile, mount: Mount, t
         except (Unavailable, RuntimeError) as error:
             progress(f"ai framing: {error}; the theme's own framing is used")
             return reel
+        if first:
+            first_cache.write_text(json.dumps(first, ensure_ascii=False), encoding="utf-8")
         cache.write_text(json.dumps(chosen, ensure_ascii=False), encoding="utf-8")
-    shots = []
-    for shot in reel.shots:
-        if shot.index in chosen:
-            names, why, own, second = chosen[shot.index]
-            attrs = {**shot.attrs, "ai": why}
-            if own:
-                attrs["views"] = own            # the views the model aimed itself, used by plan_framing
-            shot = shot.model_copy(update={"framing": list(names), "second": list(second), "attrs": attrs})
-        shots.append(shot)
-    return reel.model_copy(update={"shots": shots})
+    return _framed(reel, chosen)

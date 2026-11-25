@@ -118,6 +118,53 @@ class Runner:
         self.interval_s, self.python = interval_s, python or python_exe()
         self.closing = threading.Event()
         self.thread: threading.Thread | None = None
+        self._guard = threading.Lock()
+
+    def _say(self, line: str) -> None:
+        with self._guard:
+            self._lines.append(line)
+
+    def _alongside(self, step: str, folder: str, options: dict, work: str | None) -> dict:
+        """Start `step` in a thread of its own, beside the step that runs now. Until _await() makes
+        it the step that runs now, its progress lines are left out of the log: the bar and the
+        activity line belong to the main step."""
+        cmd = [self.python, "-u", "-m", *cli_args(step, folder, options, work)]
+        side = {"code": None, "error": "", "quit": threading.Event(), "cmd": cmd, "main": None, "text": ""}
+
+        def on_line(line: str) -> None:
+            side["text"] = line.strip() or side["text"]
+            if side["main"] is not None:
+                side["main"](line)
+            elif not SHOT.search(line):
+                self._say(line)
+
+        def run() -> None:
+            try:
+                side["code"] = self.runner(cmd, on_line, lambda: side["quit"].is_set() or self._stop
+                                           or self.closing.is_set())
+            except Exception as error:
+                side["code"], side["error"] = -1, str(error)
+        self._say(f"{step}: started alongside")
+        side["thread"] = threading.Thread(target=run, name=f"step-{step}", daemon=True)
+        side["thread"].start()
+        return side
+
+    def _await(self, side: dict, on_line) -> int:
+        """Wait for a step started by _alongside(); from now on it is the step that runs now."""
+        with self._guard:
+            side["main"] = on_line
+            self._lines.append("$ " + subprocess.list2cmdline(side["cmd"]))
+        while side["thread"].is_alive():
+            side["thread"].join(0.5)
+            self._report()
+        return side["code"] if side["code"] is not None else -1
+
+    @staticmethod
+    def _drop(side: dict | None) -> None:
+        """Stop a step running alongside and wait for it to end."""
+        if side is not None:
+            side["quit"].set()
+            side["thread"].join()
 
     # --- talking to the queue ------------------------------------------------
     def _report(self, force: bool = False) -> bool:
@@ -127,8 +174,9 @@ class Runner:
         if not force and time.monotonic() - self._sent < self.interval_s:
             return self._stop
         self._sent = time.monotonic()
-        answer = self.jobs.report(self._job, self._index, round(self._progress, 3), self._lines)
-        self._lines = []
+        with self._guard:                           # a step running alongside adds lines from its own thread
+            lines, self._lines = self._lines, []
+        answer = self.jobs.report(self._job, self._index, round(self._progress, 3), lines)
         if answer is None or answer["cancel"]:
             self._stop = True
         return self._stop
@@ -147,16 +195,24 @@ class Runner:
         self._index, self._progress = job.get("step_index", 0), job.get("progress", 0.0)
         steps, folder, options = job["steps"], job["folder"], job["options"]
         work = job_work(self.work(), job["id"])
+        try:
+            self._steps(job, steps, folder, options, work)
+        finally:
+            self._drop(self._side)                  # e.g. the runner itself failed
+
+    def _steps(self, job: dict, steps: list[str], folder: str, options: dict, work: str | None) -> None:
+        self._side = None                           # the thumbnails, made while the plan waits for the model
         for index in range(job.get("step_index", 0), len(steps)):
             step = steps[index]
             cmd = [self.python, "-u", "-m", *cli_args(step, folder, options, work)]
             self._index, self._progress = index, index / len(steps)
-            self._lines.append("$ " + subprocess.list2cmdline(cmd))
+            if not (step == "thumbnails" and self._side is not None):
+                self._say("$ " + subprocess.list2cmdline(cmd))
             reels = self._reels(out_dir(folder, options)) if step in ("render", "shots") else 1
             seen = {"last": 0, "reel": 0, "text": ""}
 
             def on_line(line: str, index=index, reels=reels, seen=seen) -> None:
-                self._lines.append(line)
+                self._say(line)
                 seen["text"] = line.strip() or seen["text"]
                 match = SHOT.search(line)
                 if match:                           # "shot i/n" comes before shot i is rendered
@@ -168,23 +224,39 @@ class Runner:
 
             if self._report(force=True):
                 break
+            # The scene thumbnails need only what analyze found: they are made while the plan
+            # mostly waits for the model's answers, not after it.
+            if step == "plan" and "thumbnails" in steps[index + 1:]:
+                self._side = self._alongside("thumbnails", folder, options, work)
             try:
-                code = self.runner(cmd, on_line, self._report)
+                if step == "thumbnails" and self._side is not None:
+                    code = self._await(self._side, on_line)
+                    seen["text"] = self._side["error"] or self._side["text"]
+                else:
+                    code = self.runner(cmd, on_line, self._report)
             except Exception as error:              # e.g. the interpreter could not be started
                 code, seen["text"] = -1, str(error)
             if code != 0 and not self._stop:        # Ctrl+Break reaches the step as well as the app:
                 self.closing.wait(0.3)              # a step that died of it is not a failed step
             if self._stop or self.closing.is_set():
                 break
+            if step == "thumbnails":
+                self._side = None
             if code != 0 and step == "thumbnails":  # the review works without pictures
-                self._lines.append("thumbnails: failed, continuing without them")
+                self._say("thumbnails: failed, continuing without them")
             elif code != 0:
+                self._drop(self._side)
+                self._side = None
                 self._report(force=True)
                 self.jobs.finish(job["id"], "error",
                                  f"{step}: exit code {code}" + (f": {seen['text']}" if seen["text"] else ""))
                 return
+        self._drop(self._side)                      # stopped or closing: the step alongside ends too
+        self._side = None
         if self.closing.is_set():                   # stays "running": Queue.recover() resumes it at this step
-            self.jobs.report(job["id"], self._index, round(self._progress, 3), self._lines)
+            with self._guard:
+                lines, self._lines = self._lines, []
+            self.jobs.report(job["id"], self._index, round(self._progress, 3), lines)
             return
         self._report(force=True)
         self.jobs.finish(job["id"], "cancelled" if self._stop else "done")

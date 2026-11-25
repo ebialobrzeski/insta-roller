@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import os
 import numpy as np
 
 from . import audio, contracts
@@ -261,14 +262,27 @@ def annotate_people(job, recordings: dict[str, Recording], scenes: list[Scene]) 
         types = job.profile.scene_types
         shown: dict[str, float] = {}
         print(f"people: looking for {len(weights)} known people in {len(scenes)} scenes", flush=True)
-        for number, scene in enumerate(scenes, 1):
-            print(f"  shot {number}/{len(scenes)}  faces {scene.id}", flush=True)
+        from . import aiframe, render
+        wanted = []                             # (recording, tilt, the moments looked at) of every scene
+        for scene in scenes:
             level = tuple(scene.attrs["level"]) if "level" in scene.attrs else None
             span = scene.end_s - scene.start_s
             times = sorted({round(scene.start_s + min(1.0, span / 4), 2), round(scene.start_s + span / 2, 2),
                             round(scene.end_s - min(1.0, span / 4), 2)})
-            rec = recordings[scene.recording].best()
-            seen = faces.scan((v for t in times for v in _views(rec, job.mount, t, level, job.work, job.log)), people)
+            wanted.append((recordings[scene.recording].best(), level, times))
+        # The costly parts do not depend on the order of the scenes, so they run side by side:
+        # decoding the moments (graphics card and processor), then finding the faces in them.
+        render.spheres([(rec, t, level) for rec, level, times in wanted for t in times], job.mount, job.work, job.log,
+                       progress=lambda n, of: print(f"  part {n}/{of}  moment", flush=True))
+        detector = faces.Detector(people.model)
+        detector.detect(np.zeros((64, 64, 3), np.uint8))        # load the model once, before the threads share it
+        sightings = aiframe.together(
+            [lambda rec=rec, level=level, times=times: faces.scan(
+                [v for t in times for v in _views(rec, job.mount, t, level, job.work, job.log)], people, detector)
+             for rec, level, times in wanted],
+            lambda n, of: print(f"  shot {n}/{of}  faces", flush=True), workers=max(2, (os.cpu_count() or 4) * 2 // 3))
+        for scene, (rec, level, times), seen in zip(scenes, wanted, sightings):
+            span = scene.end_s - scene.start_s
             middle = times[len(times) // 2]
 
             def near_holder(sighting) -> bool:
@@ -314,22 +328,20 @@ SCAN_YAWS, SCAN_FOV, SCAN_SIZE = (0, 90, 180, -90), 110.0, 800
 
 
 def _views(rec: Recording, mount, t: float, level, work, log):
-    """Four flat stills around the horizon at one moment, from a single decode: (t, image, yaw, pitch, fov)."""
-    from . import ffmpeg
-    from .ingest import EQ
+    """Four flat stills around the horizon at one moment: (t, image, yaw, pitch, fov). Cut from the
+    kept sphere of that moment (core.render.sphere), which has as many pixels per degree as they do."""
+    from . import ffmpeg, render
     folder = work / "faces"
     folder.mkdir(parents=True, exist_ok=True)
     outs = [folder / f"{rec.id}_{t:.2f}_{yaw}.jpg" for yaw in SCAN_YAWS]
     if not all(o.exists() for o in outs):
-        graph = f"{rec.source_graph(mount, level)};{EQ}split={len(outs)}" + "".join(f"[e{i}]" for i in range(len(outs)))
+        source = render.sphere(rec, mount, t, work, log, tuple(level) if level else None)
+        graph = f"[0:v]split={len(outs)}" + "".join(f"[e{i}]" for i in range(len(outs)))
         maps = []
         for i, yaw in enumerate(SCAN_YAWS):
             graph += (f";[e{i}]v360=input=e:output=flat:w={SCAN_SIZE}:h={SCAN_SIZE}:d_fov={SCAN_FOV:g}"
                       f":yaw={yaw}:pitch=0[v{i}]")
             maps += ["-map", f"[v{i}]", "-frames:v", "1", "-q:v", "3", str(outs[i])]
-        try:                                    # the nearest keyframe, decoded on the graphics card
-            ffmpeg.run([*rec.input_args(work, t, still=True), "-filter_complex", graph, *maps], log=log)
-        except RuntimeError:
-            ffmpeg.run([*rec.input_args(work, t), "-filter_complex", graph, *maps], log=log)
+        ffmpeg.run(["-i", str(source), "-filter_complex", graph, *maps], log=log)
     for out, yaw in zip(outs, SCAN_YAWS):
         yield t, str(out), float(yaw), 0.0, SCAN_FOV

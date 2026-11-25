@@ -30,6 +30,7 @@ looks for a `system-config` override in system_metadata, best effort).
 """
 from __future__ import annotations
 
+import threading
 import json
 import math
 import os
@@ -194,6 +195,17 @@ def _image(image):
     return image
 
 
+def default_providers() -> list[str]:
+    """The graphics card when the installed onnxruntime can use one (onnxruntime-directml or
+    onnxruntime-gpu), then the processor."""
+    try:
+        import onnxruntime
+        have = onnxruntime.get_available_providers()
+    except Exception:
+        have = []
+    return [p for p in ("CUDAExecutionProvider", "DmlExecutionProvider") if p in have] + ["CPUExecutionProvider"]
+
+
 class Detector:
     """insightface FaceAnalysis (SCRFD detection + ArcFace vectors), loaded on first use.
     Images are paths or BGR arrays, as OpenCV reads them."""
@@ -201,7 +213,10 @@ class Detector:
     def __init__(self, model: str = DEFAULT_MODEL, det_size: int = 640, min_score: float = 0.5,
                  providers: list[str] | None = None, root: str | None = None):
         self.model, self.det_size, self.min_score = model, det_size, min_score
-        self.providers = providers or ["CPUExecutionProvider"]
+        self.providers = providers or default_providers()
+        # One picture at a time: a session on the graphics card (DirectML) must not be run from two
+        # threads at once, and on the processor a single run already uses every core.
+        self._one = threading.Lock()
         self.root = root
         self._app = None
 
@@ -226,7 +241,9 @@ class Detector:
         return self._app
 
     def detect(self, image) -> list[Face]:
-        faces = self._load().get(_image(image))
+        image = _image(image)
+        with self._one:
+            faces = self._load().get(image)
         return [Face(tuple(float(x) for x in f.bbox), float(f.det_score), _unit(f.normed_embedding)[0])
                 for f in faces if getattr(f, "normed_embedding", None) is not None]
 

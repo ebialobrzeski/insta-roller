@@ -450,6 +450,8 @@ dialog.picker { width: min(920px, calc(100vw - 32px)); max-height: calc(100vh - 
 @keyframes sweep { from { background-position: 120% 0; } to { background-position: -120% 0; } }
 .alive { display: flex; align-items: center; gap: 8px; margin: 12px 0 0; font-size: 13px; min-width: 0; }
 .alive span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+.empty .alive { flex-wrap: wrap; justify-content: center; }
+.empty .alive span:first-of-type { white-space: normal; }
 .alive i { flex: 0 0 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: beat 1.2s ease-in-out infinite; }
 @keyframes beat { 0%, 100% { opacity: .25; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.15); } }
 .working { height: 4px; border-radius: 2px; max-width: 420px; margin: 18px auto 0; background: var(--raise-2); position: relative; overflow: hidden; }
