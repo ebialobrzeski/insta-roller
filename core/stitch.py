@@ -248,7 +248,9 @@ class Stitcher:
                     pieces.append(piece)
                 listing = out.with_suffix(".txt")
                 listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in pieces), encoding="utf-8")
-                ffmpeg.run(["-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy", str(out)], log=log)
+                tmp = out.with_suffix(".part.mp4")      # a job stopped while joining leaves no file that looks done
+                ffmpeg.run(["-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy", str(tmp)], log=log)
+                tmp.replace(out)
                 for p in (*pieces, listing):
                     p.unlink()
         out.touch()

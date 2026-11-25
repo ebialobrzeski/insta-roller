@@ -223,8 +223,13 @@ def render_reel(plan: FramingPlan, ctx: Context, out: Path, progress=print) -> P
     listing = ctx.work / f"join_{out.stem}.txt"
     listing.write_text("".join(f"file '{p.as_posix()}'\n" for p in parts), encoding="utf-8")
     out.parent.mkdir(parents=True, exist_ok=True)
+    # Joined under another name and renamed when complete: a job stopped meanwhile leaves no
+    # half reel that looks finished, and the reel of an earlier run stays until the new one is ready.
+    # (Not "*.mp4": the film list must not show it.)
+    tmp = out.with_name(f"{out.name}.part")
     ffmpeg.run(["-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy",
-                "-movflags", "+faststart", str(out)], log=ctx.log)
+                "-movflags", "+faststart", "-f", "mp4", str(tmp)], log=ctx.log)
+    tmp.replace(out)
     return out
 
 

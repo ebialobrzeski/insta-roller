@@ -155,6 +155,22 @@ def test_progress_reporting(env):
     assert (seen["status"], seen["progress"], seen["stage"]) == ("done", 1.0, "")
 
 
+def test_a_rendering_job_says_which_reel_it_makes(env):
+    job = env.submit()
+    out = env.lot1 / "insta-roller"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "reels.json").write_text(json.dumps({"reels": [
+        {"tag": "day_20250802_360s", "status": "planned"}, {"tag": "thermal_30s", "status": "skipped"},
+        {"tag": "day_20250806_360s", "status": "planned"}]}), "utf-8")
+    env.queue.claim()
+    env.queue.report(job["id"], 2, 0.6, ["$ py -m core.cli render", "render: day_20250802_360s: 2 shots", "  shot 1/2  a",
+                                         "  shot 2/2  b", "render: done -> x", "render: day_20250806_360s: 5 shots"])
+    seen = env.job()
+    assert seen["detail"] == {"reel": 2, "reels": 2, "title": "Dzień 06.08.2025"}     # no shot of this reel yet
+    env.queue.report(job["id"], 2, 0.7, ["  shot 1/5  c"])
+    assert env.job()["detail"] == {"reel": 2, "reels": 2, "title": "Dzień 06.08.2025", "shot": 1, "of": 5}
+
+
 def test_cancel_and_retry(env):
     job = env.submit()
     url = f"/api/jobs/{job['id']}"

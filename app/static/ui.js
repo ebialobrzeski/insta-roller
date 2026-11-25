@@ -180,10 +180,15 @@ export function stateText(job) {
   if (job.status === "error") return "Nie udało się";
   if (job.status === "cancelled") return "Zatrzymane";
   if (job.cancel) return "Zatrzymuję…";
-  if (job.stage === "analyze" && job.detail) return `Przeglądam nagrania: ${job.detail.shot} z ${job.detail.of}`;
-  if (job.stage === "thumbnails") return job.detail ? `Przygotowuję podgląd: ${job.detail.shot} z ${job.detail.of}` : "Przygotowuję podgląd…";
-  if (job.stage === "shots") return job.detail ? `Zapisuję ujęcie ${job.detail.shot} z ${job.detail.of}` : "Zapisuję osobne ujęcia…";
-  if (job.stage === "render") return job.detail ? `Robię rolki: ujęcie ${job.detail.shot} z ${job.detail.of}` : "Robię rolki…";
+  const d = job.detail || {}, shot = d.shot ? `ujęcie ${d.shot} z ${d.of}` : "";
+  if (job.stage === "analyze" && d.shot) return `Przeglądam nagrania: ${d.shot} z ${d.of}`;
+  if (job.stage === "thumbnails") return d.shot ? `Przygotowuję podgląd: ${d.shot} z ${d.of}` : "Przygotowuję podgląd…";
+  if (job.stage === "render" || job.stage === "shots") {
+    const doing = job.stage === "render" ? "Robię rolkę" : "Zapisuję ujęcia rolki";
+    if (d.reel) return `${doing} ${d.reel} z ${d.reels}` + (shot ? `: ${shot}` : "");
+    if (shot) return `${job.stage === "render" ? "Robię rolki" : "Zapisuję ujęcia"}: ${shot}`;
+    return job.stage === "render" ? "Robię rolki…" : "Zapisuję osobne ujęcia…";
+  }
   return `${PHASES[job.phase] || "Pracuję"}…`;
 }
 

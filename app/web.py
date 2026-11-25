@@ -46,6 +46,7 @@ VIDEO = {".insv", ".lrv", ".mp4"}
 QUALITY = {"best": "sdk", "good": "ffmpeg", "fast": "proxy"}     # the form's three choices -> --source
 PHASE = {"analyze": 0, "plan": 1, "thumbnails": 1, "render": 2, "shots": 2}    # scenes, plan, render
 SHOT = re.compile(r"shot (\d+)/(\d+)")
+REEL = re.compile(r"^(?:render: (\S+): \d+ shots|shots: (\S+))$", re.M)     # a reel begins: its tag
 TAG = re.compile(r"(.+?)_(\d+)s")       # a reel's tag: theme and length, as in reel_<tag>.mp4, shots_<tag>/
 POINTS = 300                            # barogram points sent to the browser
 
@@ -376,11 +377,45 @@ def create_app(data: str | Path | None = None, profiles: str | Path | None = Non
             labels[key] = recording_label(kind_of(job), job["folder"], read_json(scenes_path) if stamp else None)
         return labels[key]
 
+    orders: dict = {}
+    reel_titles: dict = {}
+
+    def reel_order(job: dict) -> list[str]:
+        """The tags of the planned reels, in the order they are rendered. Read once per plan."""
+        path = out_dir(job) / "reels.json"
+        try:
+            stamp = path.stat().st_mtime
+        except OSError:
+            return []
+        if orders.get(job["id"], (None,))[0] != stamp:
+            reels = (read_json(path) or {}).get("reels", [])
+            orders[job["id"]] = (stamp, [r.get("tag") for r in reels if r.get("status") == "planned"])
+        return orders[job["id"]][1]
+
+    def detail(job: dict) -> dict | None:
+        """Where the running step is: the shot, and for render and shots also which reel of how many."""
+        if job["status"] != "running":
+            return None
+        step = job["log"].rpartition("$ ")[2]           # the output of the step that runs now
+        found = {}
+        if job["stage"] in ("render", "shots"):
+            starts = list(REEL.finditer(step))
+            if starts:                                  # the shots counted after the reel began are its own
+                tag = starts[-1][1] or starts[-1][2]
+                step = step[starts[-1].end():]
+                order = reel_order(job)
+                if tag in order:
+                    if (job["id"], tag) not in reel_titles:
+                        reel_titles[job["id"], tag] = films_in(out_dir(job))[1](tag)["title"]
+                    found = {"reel": order.index(tag) + 1, "reels": len(order), "title": reel_titles[job["id"], tag]}
+        shot = SHOT.findall(step)[-1:]
+        if shot:
+            found.update(shot=int(shot[0][0]), of=int(shot[0][1]))
+        return found or None
+
     def view(job: dict, log_lines: int | None = None) -> dict:
         job = dict(job)
-        step = job["log"].rpartition("$ ")[2]           # the output of the step that runs now
-        shot = SHOT.findall(step)[-1:] if job["status"] == "running" else []
-        job["detail"] = {"shot": int(shot[0][0]), "of": int(shot[0][1])} if shot else None
+        job["detail"] = detail(job)
         if log_lines:
             job["log"] = "\n".join(job["log"].splitlines()[-log_lines:])
         work = job_work(settings()["work"], job["id"])

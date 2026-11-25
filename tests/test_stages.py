@@ -811,6 +811,31 @@ def test_spans_are_stitched_as_short_videos_not_frame_by_frame(tmp_path, monkeyp
     assert "--start-ms" in runs[-1][1] and late.lead_s == 0.0 and len(runs) == 4
 
 
+def test_a_reel_stopped_while_joining_leaves_no_finished_looking_film(tmp_path, monkeypatch):
+    from pathlib import Path
+    from core import ffmpeg, render
+    out = tmp_path / "out" / "reel_x_30s.mp4"
+    out.parent.mkdir()
+    out.write_bytes(b"the reel of an earlier run")
+    shot = SimpleNamespace(scene_id="s", duration_s=4.0, speed=1.0)
+    plan = SimpleNamespace(shots=[shot, shot])
+    ctx = SimpleNamespace(stitcher=None, source="sdk", work=tmp_path, log=tmp_path / "log.txt")
+    monkeypatch.setattr(render, "render_shot", lambda shot, plan, ctx: tmp_path / "shot.mp4")
+
+    def stopped(args, **kw):
+        Path(args[-1]).write_bytes(b"half")
+        raise KeyboardInterrupt                     # the job is stopped in the middle of joining
+    monkeypatch.setattr(ffmpeg, "run", stopped)
+    with pytest.raises(KeyboardInterrupt):
+        render.render_reel(plan, ctx, out, progress=lambda text: None)
+    assert out.read_bytes() == b"the reel of an earlier run"
+    assert [p.name for p in out.parent.glob("reel_*.mp4")] == [out.name]       # the film list sees no half reel
+
+    monkeypatch.setattr(ffmpeg, "run", lambda args, **kw: Path(args[-1]).write_bytes(b"new reel"))
+    render.render_reel(plan, ctx, out, progress=lambda text: None)
+    assert out.read_bytes() == b"new reel" and not any(out.parent.glob("*.part"))
+
+
 def test_reels_of_other_footage_are_framed_side_by_side(profile, mount):
     """A reel is told only what the earlier reels of the same recordings show, and waits only for
     their first answers: reels of other days are framed at the same time."""

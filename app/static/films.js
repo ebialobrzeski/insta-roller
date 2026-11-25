@@ -10,7 +10,9 @@ const act = (job, path, body) => guard(async () => { await api(`/api/jobs/${job.
 function progress(job) {
   if (job.status !== "running" && job.status !== "queued") return null;
   const steps = job.steps.length || 1, inStep = Math.min(Math.max(job.progress * steps - job.step_index, 0), 1);
-  const shot = job.detail ? job.detail.shot / Math.max(job.detail.of, 1) : inStep;
+  // Rolls of several reels count every reel (the runner's share of the step); elsewhere the shot of the step.
+  const many = job.stage === "render" || job.stage === "shots", d = job.detail;
+  const shot = !many && d && d.shot ? d.shot / Math.max(d.of, 1) : inStep;
   return h("div", {class: "steps3", role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": Math.round(job.progress * 100), "aria-valuetext": stateText(job)},
     PARTS.map((name, i) => h("div", {class: job.status === "queued" ? "" : i < job.phase ? "done" : i === job.phase ? "on" : "",
                                      style: i === job.phase ? `--p:${Math.round(Math.max(shot, .06) * 100)}%` : null}, name)));
@@ -30,7 +32,8 @@ function head(job) {
         h("span", {class: tag}, stateText(job)),
         h("span", {class: "mono muted"}, busy ? duration(job.elapsed_s) : date(job.updated)))),
     progress(job),
-    job.status === "running" && h("p", {class: "alive"}, h("i", {"aria-hidden": "true"}), h("span", {}, lastSaid(job) || "Pracuję…"),
+    job.status === "running" && h("p", {class: "alive"}, h("i", {"aria-hidden": "true"}),
+      h("span", {}, (job.detail && job.detail.title ? `${job.detail.title}: ` : "") + (lastSaid(job) || "Pracuję…")),
       h("span", {class: "muted"}, ` · trwa ${duration(job.elapsed_s)}`)),
     job.status === "queued" && h("p", {class: "alive idle"}, h("span", {class: "muted"}, "Czeka, aż skończy się poprzednia praca.")),
     what && h("div", {class: "problem"}, h("b", {}, what), hint),
