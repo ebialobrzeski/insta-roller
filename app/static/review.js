@@ -333,7 +333,7 @@ function waiting(job) {
       !what && job.status !== "cancelled" && h("div", {class: "working", role: "progressbar", "aria-label": "Trwa praca"}),
       !what && job.status !== "cancelled" && h("p", {class: "alive", style: "justify-content:center", id: "rv-wait"}, waitText(job)),
       what || job.status === "cancelled" ? h("div", {class: "inline", style: "justify-content:center"},
-          h("button", {class: "btn primary", type: "button", onclick: guard(async () => { await api(`/api/jobs/${job.id}/retry`, "POST"); await refresh(); show(rv.view, job.id); })}, "Spróbuj ponownie"),
+          h("button", {class: "btn primary", type: "button", onclick: guard(async () => { await api(`/api/jobs/${job.id}/retry`, "POST"); await refresh(); show(rv.view, job.id); })}, job.status === "cancelled" ? "Wznów" : "Spróbuj ponownie"),
           h("a", {class: "btn", href: `#filmy/${job.id}`}, "Zobacz szczegóły"))
         : h("div", {class: "inline", style: "justify-content:center"},
           h("button", {class: "btn", type: "button", onclick: guard(async () => { await api(`/api/jobs/${job.id}/cancel`, "POST"); await refresh(); })}, "Zatrzymaj")))));

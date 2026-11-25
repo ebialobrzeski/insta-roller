@@ -39,7 +39,8 @@ function head(job) {
     what && h("div", {class: "problem"}, h("b", {}, what), hint),
     (busy || job.status === "error" || job.status === "cancelled" || job.status === "review") && h("div", {class: "inline mt"},
       busy && h("button", {class: "btn", type: "button", onclick: act(job, "cancel")}, "Zatrzymaj"),
-      (job.status === "error" || job.status === "cancelled") && h("button", {class: "btn primary", type: "button", onclick: act(job, "retry")}, "Spróbuj ponownie"),
+      (job.status === "error" || job.status === "cancelled") && h("button", {class: "btn primary", type: "button", onclick: act(job, "retry")},
+        job.status === "cancelled" ? "Wznów" : "Spróbuj ponownie"),     // stopped: it goes on from the step it stopped at
       job.status === "review" && h("a", {class: "btn primary big", href: `#filmy/${job.id}/ujecia`}, icon("eye"), "Sprawdź ujęcia i zrób rolki"),
       job.status === "review" && h("span", {class: "muted", style: "font-size:13px"}, "Najlepsze momenty są wybrane. Zobacz je, popraw, co chcesz, i uruchom robienie rolek.")));
 }
